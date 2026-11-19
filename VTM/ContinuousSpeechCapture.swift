@@ -3,8 +3,8 @@ import Combine
 import Foundation
 import UIKit
 
-/// Foreground-only microphone capture. Recognition and delivery are serial; the tap
-/// stays open while either is underway and keeps at most three pending phrases.
+/// Foreground-only capture with single-lane recognition and ordered delivery.
+/// Separate bounded queues keep Whisper moving during translation and history writes.
 @MainActor
 final class ContinuousSpeechCapture: ObservableObject {
     @Published private(set) var isRunning = false
@@ -17,11 +17,18 @@ final class ContinuousSpeechCapture: ObservableObject {
     private weak var recognizer: SpeechRecognizer?
     private var captureOwner: UUID?
     private var engine: AVAudioEngine?
-    private var processingTask: Task<Void, Never>?
+    private var recognitionTask: Task<Void, Never>?
+    private var deliveryTask: Task<Void, Never>?
+    private var decoded: AsyncStream<DecodedPhrase>.Continuation?
     private var phrases: AsyncStream<[Float]>.Continuation?
     private var audioTap: LiveAudioTap?
     private var observations: [NSObjectProtocol] = []
     private var ownsAudioSession = false
+
+    private struct DecodedPhrase: Sendable {
+        let text: String
+        let sourceLanguage: String
+    }
 
     func start(
         recognizer: SpeechRecognizer,
@@ -96,7 +103,16 @@ final class ContinuousSpeechCapture: ObservableObject {
             isRunning = true
             isStarting = false
 
-            processingTask = Task { @MainActor [weak self, weak recognizer] in
+            let transcripts = AsyncStream<DecodedPhrase>.makeStream(bufferingPolicy: .bufferingNewest(4))
+            decoded = transcripts.continuation
+            deliveryTask = Task { @MainActor [weak self] in
+                for await phrase in transcripts.stream {
+                    guard !Task.isCancelled, self?.generation == owner else { break }
+                    await onTranscript(phrase.text, phrase.sourceLanguage)
+                }
+            }
+            recognitionTask = Task { @MainActor [weak self, weak recognizer] in
+                defer { transcripts.continuation.finish() }
                 for await samples in stream.stream {
                     guard !Task.isCancelled, self?.generation == owner, let recognizer else { break }
                     do {
@@ -106,7 +122,10 @@ final class ContinuousSpeechCapture: ObservableObject {
                         guard !Task.isCancelled, self?.generation == owner else { break }
                         switch result {
                         case let .recognized(text, sourceLanguage):
-                            if !text.isEmpty { await onTranscript(text, sourceLanguage) }
+                            let phrase = DecodedPhrase(text: text, sourceLanguage: sourceLanguage)
+                            if case .dropped = transcripts.continuation.yield(phrase) {
+                                self?.droppedSegments += 1
+                            }
                         case .unroutable:
                             onUnroutable()
                         case .empty:
@@ -121,6 +140,7 @@ final class ContinuousSpeechCapture: ObservableObject {
                     }
                 }
             }
+
         } catch {
             if generation == owner { stop() }
             throw error
@@ -134,8 +154,12 @@ final class ContinuousSpeechCapture: ObservableObject {
         isStarting = false
         isFinishing = false
         isRunning = false
-        processingTask?.cancel()
-        processingTask = nil
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        deliveryTask?.cancel()
+        deliveryTask = nil
+        decoded?.finish()
+        decoded = nil
         disableMicrophone()
         phrases?.finish()
         phrases = nil
@@ -152,7 +176,8 @@ final class ContinuousSpeechCapture: ObservableObject {
     func stopAndFinish() async {
         guard isRunning else { return }
         let owner = generation
-        let pending = processingTask
+        let pendingRecognition = recognitionTask
+        let pendingDelivery = deliveryTask
         isFinishing = true
         isRunning = false
         disableMicrophone()
@@ -160,7 +185,8 @@ final class ContinuousSpeechCapture: ObservableObject {
         phrases?.finish()
         audioTap = nil
         phrases = nil
-        await pending?.value
+        await pendingRecognition?.value
+        await pendingDelivery?.value
         if generation == owner { stop() }
     }
 

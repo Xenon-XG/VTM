@@ -247,12 +247,7 @@ class SpeechRecognizer: ObservableObject {
         try Task.checkCancellation()
         guard continuousMicrophoneOwner == owner else { throw CancellationError() }
         guard case let .recognized(raw, sourceLanguage) = detected else { return detected }
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard text.count >= Self.minTranscriptionLength,
-              !text.hasPrefix("[BLANK_AUDIO]"),
-              text.range(of: #"^\[.*\]$"#, options: .regularExpression) == nil,
-              !Self.hallucinationPatterns.contains(where: { text.contains($0) })
-        else { return .empty }
+        guard let text = LiveRecognitionPolicy.recognizedText(raw) else { return .empty }
         return .recognized(text, sourceLanguage: sourceLanguage)
     }
 
@@ -511,24 +506,11 @@ nonisolated struct ContinuousLanguagePair: Sendable {
         self.second = second
     }
 
-    /// A selected language has to win globally, not merely win against the other
-    /// selected language: a confident third language must not be translated.
-    func acceptedLanguage(topID: Int32, probabilities: [Float], sampleCount: Int)
-        -> (source: String, whisperCode: String)? {
-        let top = Int(topID)
-        guard probabilities.indices.contains(top) else { return nil }
-        let choice = topID == first.id ? first : (topID == second.id ? second : nil)
-        guard let choice else { return nil }
-        let probability = probabilities[top]
-        guard probability.isFinite, probability >= 0 else { return nil }
-        let runnerUp = probabilities.enumerated()
-            .filter { $0.offset != top && $0.element.isFinite }
-            .map(\.element).max() ?? 0
-        // Very short phrases have much less evidence. Prefer asking for a
-        // clearer phrase to silently sending text in the wrong direction.
-        let shortPhrase = sampleCount < 16_000
-        guard probability >= (shortPhrase ? 0.68 : 0.53),
-              probability - runnerUp >= (shortPhrase ? 0.25 : 0.17) else { return nil }
+    func preferredLanguage(probabilities: [Float]) -> (source: String, whisperCode: String)? {
+        guard let selectedID = LiveRecognitionPolicy.selectedLanguageID(
+            first: first.id, second: second.id, probabilities: probabilities
+        ) else { return nil }
+        let choice = selectedID == first.id ? first : second
         return (choice.selection, choice.whisperCode)
     }
 }
@@ -548,7 +530,7 @@ actor WhisperContext {
     }
 
     /// Detect from microphone audio, not the script of the decoded text.
-    /// Use the scores of all Whisper languages to reject uncertain directions.
+    /// Use only the two user-selected language scores to choose the direction.
     /// Reuse the mel spectrogram for one recognition pass once routing is known.
     func transcribeBidirectionally(samples: [Float], languages: ContinuousLanguagePair) -> ContinuousSpeechResult {
         guard !Task.isCancelled else { return .empty }
@@ -563,9 +545,9 @@ actor WhisperContext {
         let detectedID = probabilities.withUnsafeMutableBufferPointer {
             whisper_lang_auto_detect(context, 0, threads, $0.baseAddress)
         }
-        guard let language = languages.acceptedLanguage(
-            topID: detectedID, probabilities: probabilities, sampleCount: samples.count
-        ) else { return .unroutable }
+        guard detectedID >= 0,
+              let language = languages.preferredLanguage(probabilities: probabilities)
+        else { return .unroutable }
         guard !Task.isCancelled else { return .empty }
 
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
@@ -586,7 +568,7 @@ actor WhisperContext {
             // then decodes the existing mel data instead of recomputing it.
             return whisper_full(context, params, nil, 0)
         }
-        guard status == 0 else { return .empty }
+        guard status == 0 else { return .unroutable }
         return .recognized(getTranscription(), sourceLanguage: language.source)
     }
 

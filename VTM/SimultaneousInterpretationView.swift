@@ -372,7 +372,7 @@ struct SimultaneousInterpretationView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     if controller.hasUnroutablePhrase {
-                        Text(L10n: "有一段未能识别为所选语言。请用其中一种语言完整说一句。")
+                        Text(L10n: "这一段识别失败，已跳过。")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
