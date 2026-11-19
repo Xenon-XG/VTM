@@ -13,6 +13,7 @@ import Combine
 import NaturalLanguage
 
 struct TranslationView: View {
+    @Binding private var isTabSelected: Bool
     @ObservedObject private var strings = AppStrings.shared
     @EnvironmentObject var speechRecognizer: SpeechRecognizer
     @EnvironmentObject private var translator: Translator
@@ -64,6 +65,10 @@ struct TranslationView: View {
 
     /// 正在重新加载 Whisper（NLLB 使用后被卸载了）
     @State private var isReloadingWhisper = false
+
+    init(isTabSelected: Binding<Bool> = .constant(true)) {
+        _isTabSelected = isTabSelected
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -159,10 +164,18 @@ struct TranslationView: View {
             }
         }
         .onChange(of: speechRecognizer.isRecording) { _, newValue in
-            if !newValue {
+            if !newValue, isTabSelected {
                 // 录音结束 → 进入转写中状态
                 isTranscribing = true
             }
+        }
+        .onChange(of: isTabSelected) { _, selected in
+            guard !selected else { return }
+            isPressing = false
+            isCancelZone = false
+            dragTranslation = .zero
+            isTranscribing = false
+            speechRecognizer.cancelManualRecording()
         }
         // 行内语言选择器 Sheet
         .sheet(isPresented: $showSourceLanguagePicker) {
@@ -881,7 +894,7 @@ struct TranslationView: View {
 
     private func startRecording() {
         CrashDiagnostics.log("TV.startRecording: ENTERED")
-        guard !speechRecognizer.isRecording else { return }
+        guard isTabSelected, isPressing, !speechRecognizer.isRecording else { return }
 
         // 🔑 检查麦克风权限
         let micPermission = AVAudioSession.sharedInstance().recordPermission
@@ -890,6 +903,7 @@ struct TranslationView: View {
             // 首次请求权限
             AVAudioSession.sharedInstance().requestRecordPermission { [self] granted in
                 DispatchQueue.main.async {
+                    guard self.isTabSelected else { return }
                     if granted {
                         self.startRecording()
                     } else {
@@ -930,6 +944,7 @@ struct TranslationView: View {
                 await speechRecognizer.loadDefaultModel()
                 await MainActor.run {
                     isReloadingWhisper = false
+                    guard isTabSelected, isPressing else { return }
                     if speechRecognizer.isModelLoaded {
                         VTMLog.app("✅ Whisper 重新加载成功，继续录音")
                         // 重试录音

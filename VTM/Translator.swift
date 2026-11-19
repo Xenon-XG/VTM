@@ -208,6 +208,24 @@ final class Translator: ObservableObject {
         }
     }
 
+    @MainActor
+    func prepareContinuousPair(source: String, target: String) async throws -> ContinuousTranslation {
+        guard source != target,
+              TranslationRouter.isMLKitSupported(sourceLang: source, targetLang: target),
+              router.mlKitEngine.isReady else {
+            throw TranslatorError.engineNotReady("ML Kit")
+        }
+        guard !isNLLBLoading, !router.nllbEngine.isTranslating else { throw TranslatorError.continuousEngineBusy }
+        let translate = try await router.mlKitEngine.prepareContinuousPair(source: source, target: target)
+        try Task.checkCancellation()
+        guard !isNLLBLoading, !router.nllbEngine.isTranslating else { throw TranslatorError.continuousEngineBusy }
+        if router.nllbEngine.isReady {
+            router.nllbEngine.unload()
+            currentModelName = nil
+        }
+        return translate
+    }
+
     /// 异步翻译 (Swift Concurrency)
     /// ⚠️ NLLB 未加载时自动懒加载
     func translateAsync(text: String) async throws -> String {
@@ -399,9 +417,12 @@ final class Translator: ObservableObject {
 
 enum TranslatorError: LocalizedError {
     case engineNotReady(String)
+    case continuousEngineBusy
 
     var errorDescription: String? {
         switch self {
+        case .continuousEngineBusy:
+            return AppStrings.shared.get("请等待上一次离线翻译结束，再开始同传。")
         case .engineNotReady(let name):
             return "翻译引擎 \"\(name)\" 未就绪，请检查模型是否已下载"
         }

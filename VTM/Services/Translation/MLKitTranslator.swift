@@ -10,6 +10,8 @@ import Foundation
 import Combine
 import MLKitTranslate
 
+typealias ContinuousTranslation = @MainActor (String) async throws -> String
+
 /// Google ML Kit 翻译引擎
 /// 利用 ML Kit 的离线模型（~30MB/语言对），质量远优于 NLLB distilled
 final class MLKitTranslator: NSObject, TranslationEngine {
@@ -77,6 +79,55 @@ final class MLKitTranslator: NSObject, TranslationEngine {
                 continuation.resume(with: result)
             }
         }
+    }
+
+    /// Prepare the chosen model before turning the microphone on. Uncached pairs require Wi-Fi.
+    @MainActor
+    func prepareContinuousPair(source: String, target: String) async throws -> ContinuousTranslation {
+        #if canImport(MLKitTranslate)
+        guard let original = translateLanguage(from: source),
+              let translated = translateLanguage(from: target) else {
+            throw MLKitError.unsupportedLanguage(source, target)
+        }
+        let options = TranslatorOptions(sourceLanguage: original, targetLanguage: translated)
+        let translator = MLKitTranslate.Translator.translator(options: options)
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            translator.downloadModelIfNeeded(with: ModelDownloadConditions(
+                allowsCellularAccess: false,
+                allowsBackgroundDownloading: false
+            )) { [translator] error in
+                withExtendedLifetime(translator) {
+                    if let error {
+                        continuation.resume(throwing: MLKitError.modelDownloadFailed(error.localizedDescription))
+                    } else {
+                        continuation.resume(returning: ())
+                    }
+                }
+            }
+        }
+        // Retain one prepared native translator for the entire live session.
+        return { rawText in
+            let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return "" }
+            let input = source == "zh" && target == "en"
+                ? NamedEntityReplacer.preReplaceForChineseToEnglish(trimmed) : trimmed
+            return try await withCheckedThrowingContinuation { continuation in
+                translator.translate(input) { [translator] translated, error in
+                    withExtendedLifetime(translator) {
+                        if let error {
+                            continuation.resume(throwing: MLKitError.translationFailed(error.localizedDescription))
+                        } else if let translated {
+                            continuation.resume(returning: Self.removeTrailingDuplication(translated))
+                        } else {
+                            continuation.resume(throwing: MLKitError.emptyResult)
+                        }
+                    }
+                }
+            }
+        }
+        #else
+        throw MLKitError.sdkNotAvailable
+        #endif
     }
 
     // MARK: - Private: ML Kit 实际调用

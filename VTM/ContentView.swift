@@ -2,9 +2,10 @@
 //  ContentView.swift
 //  VTM
 //
-//  主界面 — 底部 2 Tab 布局（全屏无边距）
+//  主界面 — 底部 Tab 布局（全屏无边距）
 //  Tab 1: 翻译 (语音识别 + 翻译 + TTS)
-//  Tab 2: 设置 (语言 / 模型管理 / 关于)
+//  同传: 持续录音与分段翻译
+//  设置 (语言 / 模型管理 / 关于)
 //
 
 import SwiftUI
@@ -31,13 +32,19 @@ struct ContentView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             // Tab 1 — 翻译
-            TranslationView()
+            TranslationView(isTabSelected: Binding(get: { selectedTab == 0 }, set: { _ in }))
                 .tabItem {
                     Label(L10n: "翻译", systemImage: "translate")
                 }
                 .tag(0)
 
-            // Tab 2 — 设置
+            SimultaneousInterpretationView(isTabSelected: selectedTab == 2)
+                .tabItem {
+                    Label(L10n: "同声传译", systemImage: "waveform.bubble")
+                }
+                .tag(2)
+
+            // Retain the settings tag persisted by earlier releases.
             SettingsView()
                 .tabItem {
                     Label(L10n: "设置", systemImage: "gear")

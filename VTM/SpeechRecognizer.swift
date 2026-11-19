@@ -26,6 +26,8 @@ class SpeechRecognizer: ObservableObject {
     private var audioRecorder: AVAudioRecorder?
     private var recordingURL: URL?
     private var recordingStartTime: Date?
+    private var continuousMicrophoneOwner: UUID?
+    private var isFinishingRecording = false
 
     /// 标记正在加载模型，防止此期间内存警告误卸载
     private var isLoadingModels = false
@@ -188,11 +190,63 @@ class SpeechRecognizer: ObservableObject {
         }
     }
 
+    // MARK: - Continuous foreground recognition
+
+    func claimContinuousMicrophone(owner: UUID) throws {
+        guard continuousMicrophoneOwner == nil, audioRecorder == nil, !isFinishingRecording else {
+            throw LiveSpeechError.alreadyRecording
+        }
+        continuousMicrophoneOwner = owner
+    }
+
+    func releaseContinuousMicrophone(owner: UUID) {
+        if continuousMicrophoneOwner == owner { continuousMicrophoneOwner = nil }
+    }
+
+    func prepareContinuousRecognition() async throws {
+        // Startup/normal mode may already be preparing the same native model.
+        // Wait for that load instead of creating a second native context.
+        while isLoadingModels {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try Task.checkCancellation()
+        if whisperContext == nil {
+            NotificationCenter.default.post(name: NSNotification.Name("WhisperWillLoad"), object: nil)
+            await loadDefaultModel()
+        }
+        try Task.checkCancellation()
+        guard whisperContext != nil else { throw LiveSpeechError.modelUnavailable }
+    }
+
+    func transcribeContinuous(samples: [Float], sourceLanguage: String, owner: UUID) async throws -> String {
+        guard continuousMicrophoneOwner == owner else { throw CancellationError() }
+        guard let context = whisperContext else { throw LiveSpeechError.modelUnavailable }
+        guard !samples.isEmpty else { return "" }
+        try Task.checkCancellation()
+        // Explicit language per segment, without touching normal tab settings.
+        let language = sourceLanguage.split(separator: "-").first.map(String.init)?.lowercased()
+        let raw = await context.fullTranscribe(
+            samples: samples, language: language, skipPrompt: true, printRealtime: false
+        )
+        try Task.checkCancellation()
+        guard continuousMicrophoneOwner == owner else { throw CancellationError() }
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text.count >= Self.minTranscriptionLength,
+              !text.hasPrefix("[BLANK_AUDIO]"),
+              text.range(of: #"^\[.*\]$"#, options: .regularExpression) == nil,
+              !Self.hallucinationPatterns.contains(where: { text.contains($0) })
+        else { return "" }
+        return text
+    }
+
     // MARK: - Recording
 
     /// 开始录音
     /// - Parameter language: 源语言代码（如 "zh"、"en"），用于 Whisper 标点符号引导
     func startRecording(language: String? = nil) throws {
+        guard continuousMicrophoneOwner == nil, audioRecorder == nil, !isFinishingRecording else {
+            throw LiveSpeechError.alreadyRecording
+        }
         CrashDiagnostics.log("SR.startRecording: ENTERED")
         CrashDiagnostics.logMemory(tag: "sr.startRecording.enter")
         CrashDiagnostics.log("SR.startRecording: guard isModelLoaded")
@@ -252,6 +306,7 @@ class SpeechRecognizer: ObservableObject {
 
         CrashDiagnostics.log("SR.startRecording: DispatchQueue.main.async")
         DispatchQueue.main.async {
+            guard self.audioRecorder === recorder else { return }
             CrashDiagnostics.log("SR.startRecording: isRecording = true (in async)")
             self.isRecording = true
             self.transcribedText = ""
@@ -261,10 +316,26 @@ class SpeechRecognizer: ObservableObject {
         CrashDiagnostics.log("SR.startRecording: SUCCESS ✓")
     }
 
+    /// Abandon an existing manual recording without starting inference.
+    func cancelManualRecording() {
+        guard continuousMicrophoneOwner == nil, let recorder = audioRecorder else { return }
+        recorder.stop()
+        audioRecorder = nil
+        recordingStartTime = nil
+        if let recordingURL { try? FileManager.default.removeItem(at: recordingURL) }
+        recordingURL = nil
+        isRecording = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+    }
+
     /// 停止录音并等待转录完成（async）
     /// - Returns: 转录后的文本（空字符串表示无有效语音）
     func stopRecording() async -> String {
-        audioRecorder?.stop()
+        guard continuousMicrophoneOwner == nil, let recorder = audioRecorder,
+              !isFinishingRecording else { return "" }
+        isFinishingRecording = true
+        defer { isFinishingRecording = false }
+        recorder.stop()
         audioRecorder = nil
 
         let duration = recordingStartTime.map { Date().timeIntervalSince($0) } ?? 0
@@ -333,8 +404,7 @@ class SpeechRecognizer: ObservableObject {
             // 🩹 短录音（< 2s）跳过 initial_prompt：内容太少时 Whisper 会"续写"prompt 文本
             // 导致 "你好" 变成 "你好，请问今天天气怎么样？..."
             let skipPrompt = duration < 2.0
-            await context.fullTranscribe(samples: samples, language: lang, skipPrompt: skipPrompt)
-            let text = await context.getTranscription()
+            let text = await context.fullTranscribe(samples: samples, language: lang, skipPrompt: skipPrompt)
 
             await MainActor.run {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -397,14 +467,19 @@ actor WhisperContext {
         whisper_free(context)
     }
 
-    func fullTranscribe(samples: [Float], language: String? = nil, skipPrompt: Bool = false) {
+    /// Keep the native decode and result read in one actor call, so two callers
+    /// can never observe the other decode's segments.
+    func fullTranscribe(
+        samples: [Float], language: String? = nil, skipPrompt: Bool = false, printRealtime: Bool = true
+    ) -> String {
+        guard !samples.isEmpty else { return "" }
         let maxThreads = max(1, min(8, cpuCount() - 2))
         var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
 
         let langStr = language ?? "auto"
         let promptText = skipPrompt ? nil : Self.initialPrompt(for: langStr)
 
-        params.print_realtime   = true
+        params.print_realtime   = printRealtime
         params.print_progress   = false
         params.print_timestamps = false
         params.print_special    = false
@@ -414,34 +489,31 @@ actor WhisperContext {
         params.no_context       = true
         params.single_segment   = false
 
-        langStr.withCString { langPtr in
+        let result: Int32 = langStr.withCString { langPtr in
             params.language = langPtr
 
-            // 📝 标点符号引导：通过 initial_prompt 教 Whisper 输出带标点的文本
-            // ML Kit 翻译质量严重依赖输入文本的标点 — 有标点的分句翻译准确得多
-            // ⚠️ carry_initial_prompt = false：避免 initial_prompt 被重复注入每个 decode 窗口
-            // 与 no_context = true 组合时不会产生训练数据伪影（如 *subs by @dryfus*）
+            // ML Kit uses punctuation; retain the original prompt behavior for
+            // the manual mode, but not for short continuous segments.
             if let prompt = promptText {
-                prompt.withCString { promptPtr in
-                    params.initial_prompt       = promptPtr
+                return prompt.withCString { promptPtr in
+                    params.initial_prompt = promptPtr
                     params.carry_initial_prompt = false
-
                     whisper_reset_timings(context)
-                    samples.withUnsafeBufferPointer { samples in
-                        if whisper_full(context, params, samples.baseAddress, Int32(samples.count)) != 0 {
-                            print("❌ whisper_full 执行失败")
-                        }
-                    }
-                }
-            } else {
-                whisper_reset_timings(context)
-                samples.withUnsafeBufferPointer { samples in
-                    if whisper_full(context, params, samples.baseAddress, Int32(samples.count)) != 0 {
-                        print("❌ whisper_full 执行失败")
+                    return samples.withUnsafeBufferPointer {
+                        whisper_full(context, params, $0.baseAddress, Int32($0.count))
                     }
                 }
             }
+            whisper_reset_timings(context)
+            return samples.withUnsafeBufferPointer {
+                whisper_full(context, params, $0.baseAddress, Int32($0.count))
+            }
         }
+        guard result == 0 else {
+            print("❌ whisper_full 执行失败")
+            return ""
+        }
+        return getTranscription()
     }
 
     // MARK: - initial_prompt 模板
@@ -472,7 +544,7 @@ actor WhisperContext {
         }
     }
 
-    func getTranscription() -> String {
+    private func getTranscription() -> String {
         var transcription = ""
         for i in 0..<whisper_full_n_segments(context) {
             transcription += String(cString: whisper_full_get_segment_text(context, i))
