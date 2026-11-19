@@ -1,0 +1,60 @@
+name: Publish verified VTM iOS preview
+
+on:
+  push:
+    branches: [release/ios-preview-2]
+    paths: [.github/workflows/publish-ios-preview-2.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-vtm-ios-preview-2
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: Xenon-XG/VTM
+      RUN_ID: '44490811736'
+      ARTIFACT_ID: '14513086328'
+      ARTIFACT_NAME: VTM-iOS-arm64-unsigned
+      ARTIFACT_DIGEST: sha256:db5802a9ec36687eb926d74ec95476be2c7b7d8f029689d86545b58b2d9dcd33
+      BUILD_SHA: 039355c7629c97a12448087d205ff466b114a7b2
+      TAG: v1.0-ios-preview.2
+      IPA: VTM-iOS-arm64-unsigned.ipa
+    steps:
+      - name: Verify proven build and package
+        shell: bash
+        run: |
+          metadata="$(gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID")"
+          jq -e --arg name "$ARTIFACT_NAME" --arg digest "$ARTIFACT_DIGEST" --arg sha "$BUILD_SHA" --argjson run "$RUN_ID" '
+            .name == $name and .digest == $digest and .expired == false and
+            .workflow_run.head_sha == $sha and .workflow_run.id == $run
+          ' <<< "$metadata"
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/artifact.zip"
+          printf '%s  %s\n' "${ARTIFACT_DIGEST#sha256:}" "$RUNNER_TEMP/artifact.zip" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/package"
+          unzip -q "$RUNNER_TEMP/artifact.zip" "$IPA" SHA256SUMS.txt -d "$RUNNER_TEMP/package"
+          cd "$RUNNER_TEMP/package"
+          test "$(wc -l < SHA256SUMS.txt)" -eq 1
+          grep -E '^[a-f0-9]{64}  VTM-iOS-arm64-unsigned\.ipa$' SHA256SUMS.txt
+          sha256sum --check --strict SHA256SUMS.txt
+          unzip -tq "$IPA"
+          unzip -l "$IPA" Payload/VTM.app/Info.plist
+
+      - name: Publish prerelease with checked assets
+        shell: bash
+        run: |
+          matches="$(gh api "repos/$GH_REPO/git/matching-refs/tags/$TAG" --jq length)"
+          test "$matches" -eq 0
+          cd "$RUNNER_TEMP/package"
+          gh release create "$TAG" "$IPA" SHA256SUMS.txt --repo "$GH_REPO" \
+            --target "$BUILD_SHA" --title 'VTM 1.0 — iOS Preview 2' \
+            --notes '新增独立的「同声传译」标签页：可选择源语言和目标语言，连续收音，分段显示原文和译文。最近 100 段文字保存在本机。移除了废弃的激活和试用功能。适用于 iOS 17.4+ 的 arm64 设备。' \
+            --prerelease --latest=false
+          gh release view "$TAG" --repo "$GH_REPO" --json isDraft,isPrerelease,assets,url
