@@ -16,6 +16,7 @@ struct SimultaneousInterpretationView: View {
     @AppStorage("continuousInterpretationSource") private var languageA = "zh"
     @AppStorage("continuousInterpretationTarget") private var languageB = "en"
     @AppStorage("continuousInterpretationWhisperModel") private var modelFilename = "ggml-small.bin"
+    @AppStorage("continuousInterpretationSpeechDetection") private var detectionMode: LiveSpeechDetectionMode = .enhanced
     @State private var showHistory = false
     @State private var showTranslationPacks = false
     @State private var appleAvailability: AppleTranslationAvailability?
@@ -302,12 +303,28 @@ struct SimultaneousInterpretationView: View {
         NavigationStack {
             List {
                 if sheet == .recognitionModel {
-                    ForEach(WhisperModel.availableModels, id: \.filename) { model in
-                        choiceRow(title: model.displayName,
-                                  detail: "\(model.downloadSizeLabel) · \(strings.get(model.fileExists() ? "已下载" : "未下载"))",
-                                  isSelected: model.filename == selectedModel.filename) {
-                            modelFilename = model.filename
+                    Section {
+                        ForEach(WhisperModel.availableModels, id: \.filename) { model in
+                            choiceRow(title: model.displayName,
+                                      detail: "\(model.downloadSizeLabel) · \(strings.get(model.fileExists() ? "已下载" : "未下载"))",
+                                      isSelected: model.filename == selectedModel.filename) {
+                                modelFilename = model.filename
+                            }
                         }
+                    }
+                    Section {
+                        Picker(selection: $detectionMode) {
+                            Text(L10n: "增强").tag(LiveSpeechDetectionMode.enhanced)
+                            Text(L10n: "经典").tag(LiveSpeechDetectionMode.classic)
+                        } label: {
+                            Text(L10n: "人声检测")
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(busy)
+                    } header: {
+                        Text(L10n: "人声检测")
+                    } footer: {
+                        Text(L10n: "增强模式识别说话片段，经典模式仅按音量判断。此选项不会开启降噪。")
                     }
                 } else if sheet == .translationEngine {
                     TranslationEnginePicker(engine: $translationEngine)
@@ -468,7 +485,7 @@ struct SimultaneousInterpretationView: View {
                     } else {
                         ttsManager.stopSpeaking()
                         controller.start(recognizer: speechRecognizer, translator: translator, model: selectedModel,
-                                         languageA: languageA, languageB: languageB)
+                                         languageA: languageA, languageB: languageB, detectionMode: detectionMode)
                     }
                 } label: {
                     Label(L10n: busy ? "停止同传" : "开始同传", systemImage: busy ? "stop.fill" : "mic.fill")

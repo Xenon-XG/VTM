@@ -34,6 +34,7 @@ final class ContinuousSpeechCapture: ObservableObject {
         recognizer: SpeechRecognizer,
         model: WhisperModel,
         languages: (String, String),
+        detectionMode: LiveSpeechDetectionMode = .enhanced,
         onTranscript: @escaping @MainActor (String, String) async -> Void,
         onUnroutable: @escaping @MainActor () -> Void
     ) async throws {
@@ -64,8 +65,8 @@ final class ContinuousSpeechCapture: ObservableObject {
             }
 
             let session = AVAudioSession.sharedInstance()
-            // Nothing from this mode is played back automatically. Measurement
-            // mode avoids the spoken translation being captured as new input.
+            // Keep the same capture route and system processing in both modes.
+            // The selected detector changes segmentation, not the recorded signal.
             try session.setCategory(.record, mode: .measurement)
             try session.setActive(true)
             ownsAudioSession = true
@@ -79,6 +80,7 @@ final class ContinuousSpeechCapture: ObservableObject {
             let stream = AsyncStream<[Float]>.makeStream(bufferingPolicy: .bufferingNewest(3))
             let processor = try LiveAudioTap(
                 inputFormat: inputFormat,
+                detectionMode: detectionMode,
                 continuation: stream.continuation,
                 onDrop: { [weak self] in
                     Task { @MainActor [weak self] in
@@ -283,10 +285,11 @@ nonisolated private final class LiveAudioTap {
     private let lock = NSLock()
     private var finished = false
     private var reportedConversionFailure = false
-    private var segmenter = LiveSpeechSegmenter()
+    private var segmenter: LiveSpeechSegmenter
 
     init(
         inputFormat: AVAudioFormat,
+        detectionMode: LiveSpeechDetectionMode,
         continuation: AsyncStream<[Float]>.Continuation,
         onDrop: @escaping @Sendable () -> Void,
         onConversionFailure: @escaping @Sendable () -> Void
@@ -301,6 +304,14 @@ nonisolated private final class LiveAudioTap {
         self.continuation = continuation
         self.onDrop = onDrop
         self.onConversionFailure = onConversionFailure
+        if detectionMode == .enhanced, let detector = LiveWebRTCVAD() {
+            segmenter = LiveSpeechSegmenter(isVoice: { detector.isVoice($0) })
+        } else {
+            if detectionMode == .enhanced {
+                NSLog("VTM: WebRTC VAD initialization failed; using classic speech detection.")
+            }
+            segmenter = LiveSpeechSegmenter()
+        }
     }
 
     func handler() -> AVAudioNodeTapBlock {
@@ -354,77 +365,35 @@ nonisolated private final class LiveAudioTap {
     }
 }
 
-/// Processes 20ms frames independent of input hardware and buffer boundaries.
-/// Not a neural VAD: RMS filters silence; Whisper filters hallucinated transcript.
-nonisolated private struct LiveSpeechSegmenter {
-    private static let frameSize = 320
-    private static let preRollFrames = 6             // 120ms
-    private static let minVoicedFrames = 12           // 240ms
-    private static let minPhraseFrames = 24            // 480ms
-    private static let finishSilenceFrames = 30        // 600ms
-    private static let maximumFrames = 215            // 4.3s
-    private static let voiceThreshold: Float = 0.013
+/// One stateful native detector per capture (never shared across routes or sessions).
+/// Only called by the tap while its lock is held, including the final flush.
+nonisolated private final class LiveWebRTCVAD {
+    private let handle: UnsafeMutableRawPointer
+    private var pcm = [Int16](repeating: 0, count: LiveSpeechSegmenter.frameSize)
+    private var failed = false
 
-    private var window: [Float] = []
-    private var preRoll: [[Float]] = []
-    private var phrase: [Float] = []
-    private var voicedCount = 0
-    private var silentCount = 0
-
-    mutating func append(_ samples: UnsafeBufferPointer<Float>, emit: ([Float]) -> Void) {
-        for sample in samples {
-            window.append(sample.isFinite ? sample : 0)
-            if window.count == Self.frameSize {
-                if let completed = consume(window) { emit(completed) }
-                window.removeAll(keepingCapacity: true)
-            }
-        }
+    init?() {
+        guard let handle = VTMLiveVADCreate() else { return nil }
+        self.handle = handle
     }
 
-    mutating func finish() -> [Float]? {
-        if !window.isEmpty {
-            window.append(contentsOf: repeatElement(0, count: Self.frameSize - window.count))
-            if let completed = consume(window) { return completed }
-        }
-        guard voicedCount >= Self.minVoicedFrames else { return nil }
-        if phrase.count < Self.minPhraseFrames * Self.frameSize {
-            phrase.append(contentsOf: repeatElement(0, count: Self.minPhraseFrames * Self.frameSize - phrase.count))
-        }
-        return phrase
+    deinit {
+        VTMLiveVADFree(handle)
     }
 
-    private mutating func consume(_ frame: [Float]) -> [Float]? {
-        let meanSquare = frame.reduce(Float(0)) { $0 + $1 * $1 } / Float(Self.frameSize)
-        let voiced = meanSquare >= Self.voiceThreshold * Self.voiceThreshold
-        if phrase.isEmpty {
-            if !voiced {
-                preRoll.append(frame)
-                if preRoll.count > Self.preRollFrames { preRoll.removeFirst() }
-                return nil
-            }
-            phrase.reserveCapacity(Self.maximumFrames * Self.frameSize)
-            for previous in preRoll { phrase.append(contentsOf: previous) }
-            preRoll.removeAll(keepingCapacity: true)
+    func isVoice(_ samples: [Float]) -> Bool {
+        guard !failed, samples.count == pcm.count else {
+            return LiveSpeechSegmenter.classicIsVoice(samples)
         }
-        phrase.append(contentsOf: frame)
-        if voiced {
-            voicedCount += 1
-            silentCount = 0
-        } else {
-            silentCount += 1
+        for i in samples.indices {
+            pcm[i] = LiveSpeechSegmenter.pcm16(samples[i])
         }
-
-        let count = phrase.count / Self.frameSize
-        guard silentCount >= Self.finishSilenceFrames || count >= Self.maximumFrames else { return nil }
-        defer {
-            phrase = []
-            voicedCount = 0
-            silentCount = 0
+        let result = pcm.withUnsafeBufferPointer {
+            VTMLiveVADProcess(handle, $0.baseAddress, $0.count)
         }
-        guard voicedCount >= Self.minVoicedFrames else { return nil }
-        // Retain some trailing silence. The stream never gets unbounded input.
-        let trim = min(max(0, silentCount - 6), max(0, count - Self.minPhraseFrames))
-        if trim > 0 { phrase.removeLast(trim * Self.frameSize) }
-        return phrase
+        if result == 1 { return true }
+        if result == 0 { return false }
+        failed = true
+        return LiveSpeechSegmenter.classicIsVoice(samples)
     }
 }

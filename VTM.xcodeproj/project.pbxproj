@@ -360,10 +360,15 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
 				);
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"WEBRTC_POSIX=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/VTM/Services/ONNXRuntime/include",
+					"$(PROJECT_DIR)/VTM/Native/WebRTCVAD",
 				);
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "VTM uses network access for model downloads";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "VTM needs microphone access to record your voice for translation";
@@ -423,10 +428,15 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/Frameworks",
 				);
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"WEBRTC_POSIX=1",
+				);
 				GENERATE_INFOPLIST_FILE = YES;
 				HEADER_SEARCH_PATHS = (
 					"$(inherited)",
 					"$(PROJECT_DIR)/VTM/Services/ONNXRuntime/include",
+					"$(PROJECT_DIR)/VTM/Native/WebRTCVAD",
 				);
 				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "VTM uses network access for model downloads";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "VTM needs microphone access to record your voice for translation";

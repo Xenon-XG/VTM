@@ -6,3 +6,4 @@
 //
 
 #import "onnxruntime.h"
+#import "VTMLiveVAD.h"

@@ -52,7 +52,10 @@ final class SimultaneousInterpretationController: ObservableObject {
             .store(in: &captureObservers)
     }
 
-    func start(recognizer: SpeechRecognizer, translator: Translator, model: WhisperModel, languageA: String, languageB: String) {
+    func start(
+        recognizer: SpeechRecognizer, translator: Translator, model: WhisperModel,
+        languageA: String, languageB: String, detectionMode: LiveSpeechDetectionMode
+    ) {
         guard phase == .idle, languageA != languageB else { return }
         errorMessage = nil
         droppedSegments = 0
@@ -72,6 +75,7 @@ final class SimultaneousInterpretationController: ObservableObject {
                     recognizer: recognizer,
                     model: model,
                     languages: (languageA, languageB),
+                    detectionMode: detectionMode,
                     onTranscript: { [weak self] transcript, detected in
                         guard let self, self.sessionID == id else { return }
                         if detected == languageA {

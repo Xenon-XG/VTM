@@ -57,6 +57,14 @@ On iOS 26 and later, you can choose **Apple System Translation** instead. It use
 separate iOS language downloads. Install them before translating; starting live
 interpretation does not request any downloads. Language support depends on iOS.
 
+In **Live Interpreting → Speech Recognition → Speech Detection**, choose
+**Enhanced** (default) or **Classic** (the original volume threshold).
+This affects which recorded phrases reach Whisper, not the audio signal or
+the translation engine. To compare, keep the Whisper model, language pair and
+mic distance fixed. Press Stop and wait for the last caption before switching
+modes. Try a softly spoken short reply, fan noise without speech, and both
+languages taking turns. Check the original captions before judging the translation.
+
 📖 [Download PDF User Guide](VTM-User-Guide.pdf) (Chinese)
 
 ---

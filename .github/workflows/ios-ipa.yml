@@ -33,10 +33,14 @@ jobs:
           xcodebuild -version | grep -E '^Xcode 26([. ]|$)'
           xcrun --sdk iphoneos --show-sdk-version
 
-      - name: Test live interpreting language routing
+      - name: Check native WebRTC VAD bridge
+        run: bash scripts/check_webrtc_vad.sh
+
+      - name: Test live interpreting language routing and segmentation
         run: |
           xcrun swiftc -parse-as-library \
             VTM/LiveRecognitionPolicy.swift \
+            VTM/LiveSpeechSegmenter.swift \
             Tests/LiveSpeechPolicySmoke.swift -o "$RUNNER_TEMP/vtm-live-speech-tests"
           "$RUNNER_TEMP/vtm-live-speech-tests"
 
@@ -142,6 +146,7 @@ jobs:
           test "$(xcrun lipo -archs "$app/VTM")" = arm64
           xcrun vtool -show-build "$app/VTM" | grep -iE 'platform[[:space:]]+iOS[[:space:]]*$'
           test -f "$app/Frameworks/whisper.framework/whisper"
+          test -n "$(find "$app" -type f -name 'WebRTCVAD-Notice.txt' -print -quit)"
           test -n "$(find "$app" -type d -name 'MLKitTranslate_resource.bundle' -print -quit)"
           test -n "$(find "$app" -type f -name 'ggml-tiny.bin' -print -quit)"
           stage="$(mktemp -d "${RUNNER_TEMP}/vtm-ipa.XXXXXX")"
