@@ -279,8 +279,8 @@ struct TranslationView: View {
                     } else {
                         engineChip(
                             icon: "sparkles",
-                            label: "ML Kit",
-                            isReady: true
+                            label: LocalizedStringKey(translator.isMLKitReady ? "ML Kit" : "ML Kit (待下载)"),
+                            isReady: translator.isMLKitReady
                         )
                     }
                 }

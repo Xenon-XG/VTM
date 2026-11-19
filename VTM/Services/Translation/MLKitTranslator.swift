@@ -16,30 +16,12 @@ typealias ContinuousTranslation = @MainActor (String) async throws -> String
 /// 利用 ML Kit 的离线模型（~30MB/语言对），质量远优于 NLLB distilled
 final class MLKitTranslator: NSObject, TranslationEngine {
 
-    // MARK: - Published State
-
-    /// 当前活跃的 MLKit Translator 实例（按语言对缓存）
-    private var activeTranslator: MLKitTranslatorNative?
-
-    /// 当前缓存的源语言
-    private var cachedSourceLang: String?
-
-    /// 当前缓存的目标语言
-    private var cachedTargetLang: String?
-
-    /// 模型是否已下载（缓存状态下可能不准确，实际以 ML Kit 内部判断为准）
-    @Published var isModelDownloaded: Bool = false
-
-    /// 是否正在下载模型
-    @Published var isDownloadingModel: Bool = false
-
     // MARK: - TranslationEngine
 
     var engineName: String { "Google ML Kit" }
 
     var isReady: Bool {
-        // ML Kit 不需要显式"加载"，模型按需下载
-        // 只要 SDK 可用，即可认为就绪
+        // Framework availability is distinct from local model readiness.
         #if canImport(MLKitTranslate)
         return true
         #else
@@ -81,7 +63,7 @@ final class MLKitTranslator: NSObject, TranslationEngine {
         }
     }
 
-    /// Prepare the chosen model before turning the microphone on. Uncached pairs require Wi-Fi.
+    /// Use already installed device packs. Starting live interpretation never downloads them.
     @MainActor
     func prepareContinuousPair(source: String, target: String) async throws -> ContinuousTranslation {
         #if canImport(MLKitTranslate)
@@ -89,27 +71,14 @@ final class MLKitTranslator: NSObject, TranslationEngine {
               let translated = translateLanguage(from: target) else {
             throw MLKitError.unsupportedLanguage(source, target)
         }
+        try requireDownloadedPacks(source: source, target: target)
         let options = TranslatorOptions(sourceLanguage: original, targetLanguage: translated)
         let translator = MLKitTranslate.Translator.translator(options: options)
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            translator.downloadModelIfNeeded(with: ModelDownloadConditions(
-                allowsCellularAccess: false,
-                allowsBackgroundDownloading: false
-            )) { [translator] error in
-                withExtendedLifetime(translator) {
-                    if let error {
-                        continuation.resume(throwing: MLKitError.modelDownloadFailed(error.localizedDescription))
-                    } else {
-                        continuation.resume(returning: ())
-                    }
-                }
-            }
-        }
         // Retain one prepared native translator for the entire live session.
         return { rawText in
             let trimmed = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return "" }
-            let input = source == "zh" && target == "en"
+            let input = OfflinePackPolicy.canonicalCode(source) == "zh" && OfflinePackPolicy.canonicalCode(target) == "en"
                 ? NamedEntityReplacer.preReplaceForChineseToEnglish(trimmed) : trimmed
             return try await withCheckedThrowingContinuation { continuation in
                 translator.translate(input) { [translator] translated, error in
@@ -152,51 +121,26 @@ final class MLKitTranslator: NSObject, TranslationEngine {
             return
         }
 
+        do {
+            try requireDownloadedPacks(source: sourceLang, target: targetLang)
+        } catch {
+            completion(.failure(error))
+            return
+        }
+
         let options = TranslatorOptions(sourceLanguage: sourceLanguage, targetLanguage: targetLanguage)
-        let translator: MLKitTranslate.Translator = MLKitTranslate.Translator.translator(options: options)
-
-        let conditions = ModelDownloadConditions(
-            allowsCellularAccess: true,
-            allowsBackgroundDownloading: false
-        )
-
-        // 🔑 始终走 downloadModelIfNeeded（ML Kit 自带幂等：已下载会秒过）
-        // 不做预检查，避免 ModelManager 状态与实际文件不一致导致误判
-        DispatchQueue.main.async { self.isDownloadingModel = true }
-        VTMLog.translation("📥 ML Kit: 确保 zh↔en 模型已下载...")
-
-        translator.downloadModelIfNeeded(with: conditions) { [weak self] (error: Error?) in
-            DispatchQueue.main.async { self?.isDownloadingModel = false }
-
-            if let error = error {
-                VTMLog.error("ML Kit 模型下载失败: \(error.localizedDescription)", category: "Translation")
-                completion(.failure(MLKitError.modelDownloadFailed(error.localizedDescription)))
-                return
-            }
-
-            DispatchQueue.main.async { self?.isModelDownloaded = true }
-            VTMLog.translation("✅ ML Kit 模型就绪，开始翻译...")
-
-            // 🔤 zh→en 翻译前：专有名词预替换（解决 ML Kit 不认识音译词的问题）
-            let textToTranslate: String
-            if sourceLang.hasPrefix("zh"), targetLang.hasPrefix("en") {
-                textToTranslate = NamedEntityReplacer.preReplaceForChineseToEnglish(trimmed)
-            } else {
-                textToTranslate = trimmed
-            }
-
-            // 模型已确保下载，执行翻译
-            translator.translate(textToTranslate) { translatedText, error in
-                if let error = error {
+        let translator = MLKitTranslate.Translator.translator(options: options)
+        let input = OfflinePackPolicy.canonicalCode(sourceLang) == "zh" && OfflinePackPolicy.canonicalCode(targetLang) == "en"
+            ? NamedEntityReplacer.preReplaceForChineseToEnglish(trimmed) : trimmed
+        // The pinned SDK's translate API returns an error on missing files;
+        // it does not automatically start a model download.
+        translator.translate(input) { [translator] translatedText, error in
+            withExtendedLifetime(translator) {
+                if let error {
                     VTMLog.error("ML Kit 翻译失败: \(error.localizedDescription)", category: "Translation")
                     completion(.failure(MLKitError.translationFailed(error.localizedDescription)))
-                } else if let translated = translatedText {
-                    // 后处理：检测并移除 ML Kit 偶尔产生的尾部重复短语
-                    let deduped = Self.removeTrailingDuplication(translated)
-                    if deduped != translated {
-                        VTMLog.translation("🔁 ML Kit 去重: \"\(translated)\" → \"\(deduped)\"")
-                    }
-                    completion(.success(deduped))
+                } else if let translatedText {
+                    completion(.success(Self.removeTrailingDuplication(translatedText)))
                 } else {
                     completion(.failure(MLKitError.emptyResult))
                 }
@@ -204,69 +148,14 @@ final class MLKitTranslator: NSObject, TranslationEngine {
         }
     }
 
-    // MARK: - Language Mapping
-
-    /// 将 BCP-47 代码映射到 ML Kit TranslateLanguage
-    /// ML Kit TranslateLanguage 的 rawValue 就是 BCP-47 主语言代码
     private func translateLanguage(from bcp47: String) -> TranslateLanguage? {
-        let normalized = Self.normalizeBCP47(bcp47)
-        return TranslateLanguage.allLanguages().first { lang in
-            lang.rawValue == normalized
-        }
-    }
-    #endif
-
-    /// 标准化 BCP-47 → 主语言代码
-    private static func normalizeBCP47(_ code: String) -> String {
-        let components = code.split(separator: "-")
-        return components.first.map(String.init) ?? code
+        OfflineLanguagePacks.sdkLanguage(for: bcp47)
     }
 
-    // MARK: - Prewarm（预下载主力语言对模型）
-
-    /// 预下载 ML Kit zh↔en 模型（异步，不阻塞）
-    /// 在 App 启动时调用，确保第一次翻译前模型已就绪
-    /// ⚠️ ML Kit 需要 source 和 target 两个语言模型都下载
-    #if canImport(MLKitTranslate)
-    func prewarm() {
-        guard let sourceLanguage = translateLanguage(from: "zh"),
-              let targetLanguage = translateLanguage(from: "en") else {
-            VTMLog.error("ML Kit 预下载: zh/en 语言映射失败", category: "Translation")
-            return
-        }
-
-        VTMLog.translation("📥 ML Kit 开始预下载 zh↔en 模型 (~30MB)...")
-
-        let options = TranslatorOptions(sourceLanguage: sourceLanguage, targetLanguage: targetLanguage)
-        let translator = MLKitTranslate.Translator.translator(options: options)
-
-        // 🔑 强引用持有 Translator，防止异步回调期间被释放
-        // 局部变量在 prewarm() 返回后立即出作用域，ML Kit 内部不会 retain
-        activeTranslator = translator
-
-        let conditions = ModelDownloadConditions(
-            allowsCellularAccess: true,
-            allowsBackgroundDownloading: false
-        )
-
-        DispatchQueue.main.async { self.isDownloadingModel = true }
-
-        translator.downloadModelIfNeeded(with: conditions) { [weak self] error in
-            DispatchQueue.main.async {
-                self?.isDownloadingModel = false
-                // 释放强引用
-                self?.activeTranslator = nil
-                if let error = error {
-                    VTMLog.error("ML Kit 预下载失败: \(error.localizedDescription)", category: "Translation")
-                } else {
-                    self?.isModelDownloaded = true
-                    VTMLog.translation("✅ ML Kit zh↔en 模型预下载完成")
-                }
-            }
-        }
+    private func requireDownloadedPacks(source: String, target: String) throws {
+        let missing = OfflineLanguagePacks.shared.missingLanguages(for: source, and: target)
+        guard missing.isEmpty else { throw MLKitError.missingLanguagePacks(missing) }
     }
-    #else
-    func prewarm() { /* ML Kit SDK 不可用 */ }
     #endif
 
     // MARK: - 尾部重复检测
@@ -316,9 +205,6 @@ final class MLKitTranslator: NSObject, TranslationEngine {
         return text
     }
 
-    // Typealias for the actual ML Kit Translator class to avoid ambiguity
-    // 使用完全限定名避免与模块内 Translator 类冲突
-    private typealias MLKitTranslatorNative = MLKitTranslate.Translator
 }
 
 // MARK: - ML Kit 错误类型
@@ -326,7 +212,7 @@ final class MLKitTranslator: NSObject, TranslationEngine {
 enum MLKitError: LocalizedError {
     case sdkNotAvailable
     case unsupportedLanguage(String, String)
-    case modelDownloadFailed(String)
+    case missingLanguagePacks([String])
     case translationFailed(String)
     case emptyResult
 
@@ -336,8 +222,10 @@ enum MLKitError: LocalizedError {
             return "ML Kit SDK 不可用，请检查项目配置"
         case .unsupportedLanguage(let src, let tgt):
             return "ML Kit 不支持 \"\(src)\" → \"\(tgt)\" 的语言对"
-        case .modelDownloadFailed(let detail):
-            return "ML Kit 模型下载失败: \(detail)"
+        case .missingLanguagePacks(let codes):
+            let strings = AppStrings.shared
+            let names = codes.map { strings.locale.localizedString(forLanguageCode: $0) ?? $0 }
+            return String(format: strings.get("请先在模型管理下载翻译语言包：%@"), names.joined(separator: " / "))
         case .translationFailed(let detail):
             return "ML Kit 翻译失败: \(detail)"
         case .emptyResult:

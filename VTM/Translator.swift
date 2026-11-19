@@ -6,12 +6,12 @@
 //
 //  架构:
 //    TranslationRouter
-//      ├─ ⭐ MLKitTranslator (zh↔en 等主流语言，~30MB/语言对)
+//      ├─ ⭐ MLKitTranslator (zh↔en 等主流语言，按语言预先下载)
 //      └─ 🔄 NLLBTranslator (罕见语言后备，~940MB，懒加载)
 //
 //  内存策略:
 //     - 启动只加载 Whisper (~466MB)
-//     - ML Kit 模型按需下载 (~30MB，首次翻译前预下载)
+//     - ML Kit 翻译包只在模型管理中手动下载
 //     - NLLB 不预加载，仅在 ML Kit 不支持的语言对时按需加载
 //
 
@@ -31,6 +31,8 @@ final class Translator: ObservableObject {
     /// 目标语言（短代码 "zh"/"en" 等，@Published 直接驱动 UI 刷新）
     @Published var targetLanguage: String = "en"
 
+    private var packStatusObserver: AnyCancellable?
+
     // MARK: - Init
 
     init() {
@@ -40,6 +42,10 @@ final class Translator: ObservableObject {
         }
         if let saved = UserDefaults.standard.string(forKey: "targetLanguage") {
             targetLanguage = Self.normalizeBCP47(saved)
+        }
+
+        packStatusObserver = OfflineLanguagePacks.shared.$states.dropFirst().sink { [weak self] _ in
+            self?.objectWillChange.send()
         }
 
         // 监听 SettingsView / 跨进程语言切换（@AppStorage → UserDefaults）
@@ -311,7 +317,9 @@ final class Translator: ObservableObject {
         TranslationRouter.isMLKitSupported(
             sourceLang: sourceLanguage,
             targetLang: targetLanguage
-        ) && router.isPrimaryReady
+        ) && router.isPrimaryReady && OfflineLanguagePacks.shared.missingLanguages(
+            for: sourceLanguage, and: targetLanguage
+        ).isEmpty
     }
 
     /// NLLB 后备引擎是否就绪
@@ -338,7 +346,7 @@ final class Translator: ObservableObject {
             sourceLang: sourceLanguage,
             targetLang: targetLanguage
         ) {
-            return LocalizedStringKey(router.mlKitEngine.isReady ? "Google ML Kit" : "ML Kit (待下载)")
+            return LocalizedStringKey(isMLKitReady ? "Google ML Kit" : "ML Kit (待下载)")
         } else if router.nllbEngine.isReady {
             return "NLLB-200"
         } else {
@@ -358,15 +366,12 @@ final class Translator: ObservableObject {
 
     /// ML Kit 是否正在下载模型
     var isMLKitDownloading: Bool {
-        router.mlKitEngine.isDownloadingModel
+        [sourceLanguage, targetLanguage].contains {
+            OfflineLanguagePacks.shared.state(for: $0) == .downloading
+        }
     }
 
     // MARK: - Model Management
-
-    /// 预下载 ML Kit zh↔en 模型（异步，不阻塞 UI）
-    func prewarmMLKit() {
-        router.mlKitEngine.prewarm()
-    }
 
     /// 尝试加载已下载的 NLLB 模型（后备引擎，按需懒加载）
     /// ⚠️ 加载前会通知 Whisper 主动卸载以释放 ~466MB 内存

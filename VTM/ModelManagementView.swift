@@ -16,6 +16,7 @@ struct ModelManagementView: View {
     @ObservedObject private var strings = AppStrings.shared
     @EnvironmentObject var speechRecognizer: SpeechRecognizer
     @EnvironmentObject var translator: Translator
+    @ObservedObject private var offlinePacks = OfflineLanguagePacks.shared
 
     @State private var isOnWiFi = true
     @State private var showCellularWarning = false
@@ -36,7 +37,7 @@ struct ModelManagementView: View {
         }
     }
 
-    private let monitor = NWPathMonitor()
+    @State private var monitor: NWPathMonitor?
     private let monitorQueue = DispatchQueue(label: "NetworkMonitor")
 
     var body: some View {
@@ -67,33 +68,20 @@ struct ModelManagementView: View {
                     title: "ML Kit",
                     subtitle: "主力翻译引擎 · Google 设备端",
                     status: mlKitStatus,
-                    sizeMB: "~30 MB / 语言对",
+                    sizeMB: nil,
                     infoType: .mlKit
                 ) {
                     VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Image(systemName: mlKitStatus.isReady ? "checkmark.circle.fill" : "circle")
-                                .foregroundColor(mlKitStatus.isReady ? .green : .secondary)
-                                .font(.caption)
-                            Text(L10n: "zh ↔ en 模型")
-                                .font(.caption)
-                            Spacer()
-                            if translator.isMLKitDownloading {
-                                ProgressView()
-                                    .scaleEffect(0.7)
-                            }
+                        Text(verbatim: String(format: strings.get("已下载 %d 个语言包"), installedTranslationPackCount))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        NavigationLink {
+                            OfflineLanguagePacksView()
+                        } label: {
+                            Label(L10n: "管理离线翻译语言包", systemImage: "arrow.down.circle")
+                                .font(.subheadline.weight(.semibold))
                         }
-
-                        if !mlKitStatus.isReady && !translator.isMLKitDownloading {
-                            Button {
-                                translator.prewarmMLKit()
-                            } label: {
-                                Label(L10n: "预下载 zh↔en 模型", systemImage: "arrow.down.circle")
-                                    .font(.caption)
-                            }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
-                        }
+                        .buttonStyle(.bordered)
                     }
                 }
 
@@ -137,8 +125,14 @@ struct ModelManagementView: View {
         .sheet(item: $infoModelType) { type in
             modelInfoSheet(type)
         }
-        .onAppear { startNetworkMonitoring() }
-        .onDisappear { monitor.cancel() }
+        .onAppear {
+            startNetworkMonitoring()
+            offlinePacks.refresh()
+        }
+        .onDisappear {
+            monitor?.cancel()
+            monitor = nil
+        }
     }
 
     // MARK: - Model Status
@@ -153,14 +147,19 @@ struct ModelManagementView: View {
         }
     }
 
+    private var translationPackStates: [OfflineLanguagePacks.State] {
+        OfflineLanguagePacks.supportedCodes.filter { $0 != "en" }.map { offlinePacks.state(for: $0) }
+    }
+
+    private var installedTranslationPackCount: Int {
+        translationPackStates.filter { if case .installed = $0 { return true }; return false }.count
+    }
+
     private var mlKitStatus: ModelStatus {
-        if translator.isMLKitDownloading {
+        if translationPackStates.contains(where: { if case .downloading = $0 { return true }; return false }) {
             return .downloading
-        } else if translator.isMLKitReady {
-            return .loaded
-        } else {
-            return .notDownloaded
         }
+        return installedTranslationPackCount > 0 ? .downloaded : .notDownloaded
     }
 
     private var nllbStatus: ModelStatus {
@@ -412,6 +411,9 @@ struct ModelManagementView: View {
     // MARK: - Network Monitor
 
     private func startNetworkMonitoring() {
+        guard monitor == nil else { return }
+        let monitor = NWPathMonitor()
+        self.monitor = monitor
         monitor.pathUpdateHandler = { path in
             DispatchQueue.main.async {
                 isOnWiFi = path.usesInterfaceType(.wifi) || path.usesInterfaceType(.wiredEthernet)

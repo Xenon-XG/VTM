@@ -60,8 +60,6 @@ struct VTMApp: App {
                                 await sr.loadDefaultModel()
                                 VTMLog.model("✅ Whisper 加载完成: \(sr.isModelLoaded)")
                             }
-
-                            tr.prewarmMLKit()
                         }
                         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ModelDownloaded"))) { _ in
                             Task {
@@ -75,7 +73,6 @@ struct VTMApp: App {
                                 } else {
                                     CrashDiagnostics.log("APP.ModelDownloaded: Whisper already loaded, skipping")
                                 }
-                                tr.prewarmMLKit()
 
                                 VTMLog.download("✅ 下载后加载完成 — Whisper: \(sr.isModelLoaded)")
                                 CrashDiagnostics.logMemory(tag: "download.complete")

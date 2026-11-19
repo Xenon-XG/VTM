@@ -4,6 +4,7 @@ struct SimultaneousInterpretationView: View {
     let isTabSelected: Bool
 
     @ObservedObject private var strings = AppStrings.shared
+    @ObservedObject private var offlinePacks = OfflineLanguagePacks.shared
     @EnvironmentObject private var speechRecognizer: SpeechRecognizer
     @EnvironmentObject private var translator: Translator
     @EnvironmentObject private var ttsManager: TTSManager
@@ -15,6 +16,7 @@ struct SimultaneousInterpretationView: View {
     @AppStorage("continuousInterpretationTarget") private var languageB = "en"
     @AppStorage("continuousInterpretationWhisperModel") private var modelFilename = "ggml-small.bin"
     @State private var showHistory = false
+    @State private var showTranslationPacks = false
     @State private var showClearConfirmation = false
     @State private var selectionSheet: ChoiceSheet?
 
@@ -44,6 +46,10 @@ struct SimultaneousInterpretationView: View {
     }
 
     private var hasWhisperModel: Bool { selectedModel.fileExists() }
+    private var missingPackNames: String {
+        offlinePacks.missingLanguages(for: languageA, and: languageB)
+            .map { languageName($0) }.joined(separator: " / ")
+    }
 
     var body: some View {
         NavigationStack {
@@ -72,10 +78,27 @@ struct SimultaneousInterpretationView: View {
         }
         .sheet(isPresented: $showHistory) { historySheet }
         .sheet(item: $selectionSheet) { sheet in choices(for: sheet) }
+        .sheet(isPresented: $showTranslationPacks, onDismiss: { offlinePacks.refresh() }) {
+            NavigationStack {
+                OfflineLanguagePacksView(focusCodes: [languageA, languageB])
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { showTranslationPacks = false } label: { Text(L10n: "完成") }
+                        }
+                    }
+            }
+        }
+        .onAppear { offlinePacks.refresh() }
         .onChange(of: isTabSelected) { _, selected in
-            if !selected { controller.stop() }
+            if selected {
+                offlinePacks.refresh()
+            } else {
+                showTranslationPacks = false
+                controller.stop()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
+            if phase == .active && isTabSelected { offlinePacks.refresh() }
             if phase == .background || (phase == .inactive && [.listening, .finishing].contains(controller.phase)) {
                 controller.stop()
             }
@@ -102,9 +125,18 @@ struct SimultaneousInterpretationView: View {
                 modelChoice
             }
             .disabled(busy)
-            Text(L10n: "自动判断每段语音的语言，两种语言都能说。首次使用语言对可能需要 Wi-Fi。")
+            Text(L10n: "自动判断每段语音的语言，两种语言都能说。")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            if !busy && (missingPackNames.isEmpty || !hasWhisperModel) {
+                Button {
+                    showTranslationPacks = true
+                } label: {
+                    Label(L10n: "离线翻译语言包", systemImage: "arrow.down.circle")
+                        .font(.footnote.weight(.semibold))
+                }
+                .buttonStyle(.borderless)
+            }
             if let message = controller.errorMessage {
                 HStack(alignment: .top) {
                     Label { Text(verbatim: message) } icon: { Image(systemName: "exclamationmark.circle") }
@@ -344,6 +376,19 @@ struct SimultaneousInterpretationView: View {
                     Label(L10n: "去设置 → 模型管理", systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderedProminent)
+            } else if !busy && !missingPackNames.isEmpty {
+                Text(verbatim: String(format: strings.get("请先在模型管理下载翻译语言包：%@"), missingPackNames))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                Button {
+                    showTranslationPacks = true
+                } label: {
+                    Label(L10n: "管理离线翻译语言包", systemImage: "arrow.down.circle")
+                        .frame(maxWidth: 360, minHeight: 26)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(!isTabSelected || scenePhase != .active)
             } else {
                 Button {
                     if busy {

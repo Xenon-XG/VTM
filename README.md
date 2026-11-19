@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/platform-iOS%2017.4%2B-lightgrey.svg)]()
 
 **Fully offline voice translation app for iOS.**  
-No internet required for translation. All processing happens locally on your device.
+Download the required models once, then recognize and translate offline on your device.
 
 ---
 
@@ -46,6 +46,12 @@ No internet required for translation. All processing happens locally on your dev
 ---
 
 ## User Guide
+
+For offline use, open **Settings → Model Management** before you need to translate.
+Download one **Whisper** model for speech recognition and the **Offline Translation
+Language Packs** for the languages you use with ML Kit. English is built in. For
+Chinese ↔ Japanese, download Chinese and Japanese once; both directions use the
+same packs. Download over Wi-Fi with VTM in the foreground.
 
 📖 [Download PDF User Guide](VTM-User-Guide.pdf) (Chinese)
 
