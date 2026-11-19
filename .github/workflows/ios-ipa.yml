@@ -38,7 +38,7 @@ jobs:
           work="$(mktemp -d "${RUNNER_TEMP}/vtm-frameworks.XXXXXX")"
           trap 'rm -rf "$work"' EXIT
           curl --fail --location --silent --show-error --retry 3 \
-            'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-v1.8.3-xcframework.zip' \
+            'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.7/whisper-v1.8.7-xcframework.zip' \
             -o "$work/whisper.zip"
           curl --fail --location --silent --show-error --retry 3 \
             'https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.26.0.zip' \
@@ -46,7 +46,7 @@ jobs:
           (
             cd "$work"
             shasum -a 256 -c <<'SUMS'
-          a970006f256c8e689bc79e73f7fa7ddb8c1ed2703ad43ee48eb545b5bb6de6af  whisper.zip
+          501076a091bf4b2d76ec92df9dd13278382dfb266b82bbd438c210a21c10b84c  whisper.zip
           08502ec252f6f03ebee6e729cbe0525c777b47daa76d3bc8c04bba82201d8a36  onnxruntime.zip
           SUMS
             unzip -q whisper.zip 'build-apple/whisper.xcframework/ios-arm64/whisper.framework/*'
@@ -61,7 +61,19 @@ jobs:
       - name: Install locked CocoaPods dependencies
         run: |
           pod --version
-          pod install --deployment
+          cp Podfile.lock "$RUNNER_TEMP/vtm-original-Podfile.lock"
+          pod install
+          # The committed Podfile metadata is stale. Permit regeneration only
+          # if every dependency, spec checksum, and repository stays locked.
+          ruby -ryaml - "$RUNNER_TEMP/vtm-original-Podfile.lock" Podfile.lock <<'RUBY'
+          previous, current = ARGV.map do |path|
+            YAML.safe_load(File.read(path)).reject { |key, _| ["PODFILE CHECKSUM", "COCOAPODS"].include?(key) }
+          end
+          unless previous == current
+            changed = (previous.keys | current.keys).select { |key| previous[key] != current[key] }
+            abort "CocoaPods changed locked data: #{changed.join(', ')}"
+          end
+          RUBY
           # Apply the Podfile's ML Kit resource path repair even if CocoaPods
           # writes the integration scripts after its post_install hook.
           python3 - <<'PY'
