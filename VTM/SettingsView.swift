@@ -11,6 +11,7 @@ struct SettingsView: View {
     @ObservedObject private var strings = AppStrings.shared
     @AppStorage("sourceLanguage") private var sourceLanguage = "zh-CN"
     @AppStorage("targetLanguage") private var targetLanguage = "en-US"
+    @AppStorage("translationEngine") private var translationEngine: VTMTranslationEngine = .mlKit
     @AppStorage("autoPlayTranslation") private var autoPlay = true
     @AppStorage("autoDetectLanguage") private var autoDetectLanguage = true
     @AppStorage("conversationMode") private var conversationMode = false
@@ -86,6 +87,19 @@ struct SettingsView: View {
 
                 // MARK: - 翻译设置
                 Section {
+                    TranslationEnginePicker(engine: $translationEngine)
+                    if translationEngine == .apple || AppleSystemTranslator.isAvailable {
+                        NavigationLink {
+                            AppleTranslationPacksView(source: sourceLanguage, target: targetLanguage)
+                        } label: {
+                            Label(L10n: "准备苹果语言资源", systemImage: "arrow.down.circle")
+                        }
+                    } else {
+                        Text(L10n: "Apple 系统翻译需要 iOS 26 或更新版本的实体设备。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
                     Picker(selection: $sourceLanguage) {
                         ForEach(languages, id: \.1) { name, code in
                             Text(name).tag(code)
@@ -175,6 +189,7 @@ struct SettingsView: View {
         UserDefaults.standard.removeObject(forKey: "autoPlayTranslation")
         UserDefaults.standard.removeObject(forKey: "autoDetectLanguage")
         UserDefaults.standard.removeObject(forKey: "conversationMode")
+        translationEngine = .mlKit
         sourceLanguage = "zh-CN"
         targetLanguage = "en-US"
         autoPlay = true

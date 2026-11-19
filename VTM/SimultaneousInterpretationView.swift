@@ -12,16 +12,19 @@ struct SimultaneousInterpretationView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @StateObject private var controller = SimultaneousInterpretationController()
     // Keep existing stored language choices; these are now the unordered A/B pair.
+    @AppStorage("translationEngine") private var translationEngine: VTMTranslationEngine = .mlKit
     @AppStorage("continuousInterpretationSource") private var languageA = "zh"
     @AppStorage("continuousInterpretationTarget") private var languageB = "en"
     @AppStorage("continuousInterpretationWhisperModel") private var modelFilename = "ggml-small.bin"
     @State private var showHistory = false
     @State private var showTranslationPacks = false
+    @State private var appleAvailability: AppleTranslationAvailability?
+    @State private var checkedApplePair: [String] = []
     @State private var showClearConfirmation = false
     @State private var selectionSheet: ChoiceSheet?
 
     private enum ChoiceSheet: String, Identifiable {
-        case languageA, languageB, recognitionModel
+        case languageA, languageB, recognitionModel, translationEngine
         var id: String { rawValue }
 
         var title: String {
@@ -29,6 +32,7 @@ struct SimultaneousInterpretationView: View {
             case .languageA: return "选择语言 A"
             case .languageB: return "选择语言 B"
             case .recognitionModel: return "选择语音识别模型"
+            case .translationEngine: return "选择翻译引擎"
             }
         }
     }
@@ -78,9 +82,12 @@ struct SimultaneousInterpretationView: View {
         }
         .sheet(isPresented: $showHistory) { historySheet }
         .sheet(item: $selectionSheet) { sheet in choices(for: sheet) }
-        .sheet(isPresented: $showTranslationPacks, onDismiss: { offlinePacks.refresh() }) {
+        .sheet(isPresented: $showTranslationPacks, onDismiss: {
+            offlinePacks.refresh()
+            Task { await refreshAppleAvailability() }
+        }) {
             NavigationStack {
-                OfflineLanguagePacksView(focusCodes: [languageA, languageB])
+                selectedTranslationPackView
                     .toolbar {
                         ToolbarItem(placement: .topBarTrailing) {
                             Button { showTranslationPacks = false } label: { Text(L10n: "完成") }
@@ -88,17 +95,24 @@ struct SimultaneousInterpretationView: View {
                     }
             }
         }
+        .task(id: "\(translationEngine.rawValue)|\(languageA)|\(languageB)") {
+            await refreshAppleAvailability()
+        }
         .onAppear { offlinePacks.refresh() }
         .onChange(of: isTabSelected) { _, selected in
             if selected {
                 offlinePacks.refresh()
+                Task { await refreshAppleAvailability() }
             } else {
                 showTranslationPacks = false
                 controller.stop()
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active && isTabSelected { offlinePacks.refresh() }
+            if phase == .active && isTabSelected {
+                offlinePacks.refresh()
+                Task { await refreshAppleAvailability() }
+            }
             if phase == .background || (phase == .inactive && [.listening, .finishing].contains(controller.phase)) {
                 controller.stop()
             }
@@ -107,36 +121,35 @@ struct SimultaneousInterpretationView: View {
     }
 
     private var controls: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 5) {
                 if dynamicTypeSize.isAccessibilitySize {
-                    VStack(spacing: 7) {
+                    VStack(spacing: 4) {
                         languageChoice(.languageA, code: languageA)
                         directionIcon
                         languageChoice(.languageB, code: languageB)
                     }
+                    recognitionControl
+                    translationControl
                 } else {
-                    HStack(alignment: .center, spacing: 8) {
+                    HStack(alignment: .center, spacing: 6) {
                         languageChoice(.languageA, code: languageA)
                         directionIcon
                         languageChoice(.languageB, code: languageB)
+                    }
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 6) {
+                            recognitionControl
+                            translationControl
+                        }
+                        VStack(spacing: 4) {
+                            recognitionControl
+                            translationControl
+                        }
                     }
                 }
-                modelChoice
             }
             .disabled(busy)
-            Text(L10n: "自动判断每段语音的语言，两种语言都能说。")
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-            if !busy && (missingPackNames.isEmpty || !hasWhisperModel) {
-                Button {
-                    showTranslationPacks = true
-                } label: {
-                    Label(L10n: "离线翻译语言包", systemImage: "arrow.down.circle")
-                        .font(.footnote.weight(.semibold))
-                }
-                .buttonStyle(.borderless)
-            }
             if let message = controller.errorMessage {
                 HStack(alignment: .top) {
                     Label { Text(verbatim: message) } icon: { Image(systemName: "exclamationmark.circle") }
@@ -154,7 +167,7 @@ struct SimultaneousInterpretationView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.vertical, 5)
         .background(.regularMaterial)
     }
 
@@ -162,8 +175,7 @@ struct SimultaneousInterpretationView: View {
         Image(systemName: "arrow.left.arrow.right")
             .font(.system(.callout, design: .rounded, weight: .semibold))
             .foregroundStyle(Color.accentColor)
-            .padding(7)
-            .background(Color.accentColor.opacity(0.13), in: Circle())
+            .padding(4)
             .accessibilityHidden(true)
     }
 
@@ -173,12 +185,9 @@ struct SimultaneousInterpretationView: View {
             selectionSheet = sheet
         } label: {
             HStack(spacing: 6) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L10n: title)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
                     Text(verbatim: languageName(code))
-                        .font(.headline)
+                        .font(.subheadline.weight(.semibold))
                         .foregroundStyle(.primary)
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
@@ -189,9 +198,8 @@ struct SimultaneousInterpretationView: View {
                     .foregroundStyle(Color.accentColor)
                     .accessibilityHidden(true)
             }
-            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
-            .padding(.horizontal, 9)
-            .padding(.vertical, 3)
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 8)
             .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
             .overlay {
                 RoundedRectangle(cornerRadius: 11).strokeBorder(.quaternary, lineWidth: 1)
@@ -203,42 +211,91 @@ struct SimultaneousInterpretationView: View {
         .accessibilityValue(Text(verbatim: languageName(code)))
     }
 
-    private var modelChoice: some View {
+    private var recognitionControl: some View {
+        compactControl(
+            title: "语音识别",
+            value: selectedModel.displayName,
+            icon: "waveform",
+            missing: !hasWhisperModel,
+            sheet: .recognitionModel
+        )
+    }
+
+    private var translationControl: some View {
+        compactControl(
+            title: "翻译",
+            value: strings.get(translationEngine == .apple ? "Apple 系统翻译" : "Google ML Kit"),
+            icon: translationEngine == .apple ? "apple.logo" : "sparkles",
+            missing: !translationReady,
+            sheet: .translationEngine
+        )
+    }
+
+    private func compactControl(title: String, value: String, icon: String, missing: Bool, sheet: ChoiceSheet) -> some View {
         Button {
-            selectionSheet = .recognitionModel
+            selectionSheet = sheet
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform")
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.caption)
                     .foregroundStyle(Color.accentColor)
                     .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(L10n: "语音识别模型")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(verbatim: selectedModel.displayName)
-                        .font(.footnote.weight(.semibold))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(L10n: title).font(.caption2).foregroundStyle(.secondary)
+                    Text(verbatim: value)
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.primary)
-                    if !hasWhisperModel {
-                        Text(L10n: "未下载").font(.caption2).foregroundStyle(.orange)
-                    }
+                        .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
                 }
                 Spacer(minLength: 0)
-                Image(systemName: "chevron.down")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
-                    .accessibilityHidden(true)
+                if missing {
+                    Image(systemName: "exclamationmark.circle")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .accessibilityHidden(true)
+                }
             }
-            .frame(minHeight: 44)
-            .padding(.horizontal, 9)
-            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 11))
-            .overlay {
-                RoundedRectangle(cornerRadius: 11).strokeBorder(.quaternary, lineWidth: 1)
-            }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .padding(.horizontal, 7)
+            .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 9))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(Text(L10n: "语音识别模型"))
-        .accessibilityValue(Text(verbatim: selectedModel.displayName))
+        .accessibilityLabel(Text(L10n: title))
+        .accessibilityValue(Text(verbatim: value + (missing ? ", " + strings.get("资源未就绪") : "")))
+    }
+
+    @ViewBuilder private var selectedTranslationPackView: some View {
+        if translationEngine == .apple {
+            AppleTranslationPacksView(source: languageA, target: languageB, bidirectional: true)
+        } else {
+            OfflineLanguagePacksView(focusCodes: [languageA, languageB])
+        }
+    }
+
+    private var translationReady: Bool {
+        if translationEngine == .mlKit { return missingPackNames.isEmpty }
+        if case .installed? = currentAppleAvailability { return true }
+        return false
+    }
+
+    private var currentAppleAvailability: AppleTranslationAvailability? {
+        checkedApplePair == [languageA, languageB] ? appleAvailability : nil
+    }
+
+    private func refreshAppleAvailability() async {
+        guard translationEngine == .apple else {
+            appleAvailability = nil
+            checkedApplePair = []
+            return
+        }
+        let left = languageA
+        let right = languageB
+        let result = await AppleSystemTranslator.bidirectionalAvailability(left, right)
+        guard !Task.isCancelled, translationEngine == .apple,
+              languageA == left, languageB == right else { return }
+        appleAvailability = result
+        checkedApplePair = [left, right]
     }
 
     private func choices(for sheet: ChoiceSheet) -> some View {
@@ -251,6 +308,19 @@ struct SimultaneousInterpretationView: View {
                                   isSelected: model.filename == selectedModel.filename) {
                             modelFilename = model.filename
                         }
+                    }
+                } else if sheet == .translationEngine {
+                    TranslationEnginePicker(engine: $translationEngine)
+                    NavigationLink {
+                        selectedTranslationPackView
+                    } label: {
+                        Label(L10n: translationEngine == .apple ? "准备苹果语言资源" : "离线翻译语言包",
+                              systemImage: "arrow.down.circle")
+                    }
+                    if !AppleSystemTranslator.isAvailable {
+                        Text(L10n: "Apple 系统翻译需要 iOS 26 或更新版本的实体设备。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 } else {
                     let current = sheet == .languageA ? languageA : languageB
@@ -376,7 +446,9 @@ struct SimultaneousInterpretationView: View {
                     Label(L10n: "去设置 → 模型管理", systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(.borderedProminent)
-            } else if !busy && !missingPackNames.isEmpty {
+            } else if !busy && translationEngine == .apple && !translationReady {
+                appleStartBlocker
+            } else if !busy && translationEngine == .mlKit && !missingPackNames.isEmpty {
                 Text(verbatim: String(format: strings.get("请先在模型管理下载翻译语言包：%@"), missingPackNames))
                     .font(.footnote)
                     .foregroundStyle(.secondary)
@@ -433,6 +505,29 @@ struct SimultaneousInterpretationView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(.regularMaterial)
+    }
+
+    @ViewBuilder private var appleStartBlocker: some View {
+        switch currentAppleAvailability {
+        case .installed?:
+            EmptyView()
+        case .missing?:
+            Button {
+                showTranslationPacks = true
+            } label: {
+                Label(L10n: "准备苹果语言资源", systemImage: "arrow.down.circle")
+                    .frame(maxWidth: 360, minHeight: 26)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!isTabSelected || scenePhase != .active)
+        case .unsupported?:
+            Text(L10n: "Apple 系统翻译不支持所选语言组合。").font(.footnote).foregroundStyle(.secondary)
+        case .unavailable?:
+            Text(L10n: "当前环境无法使用苹果系统翻译。").font(.footnote).foregroundStyle(.secondary)
+        case nil:
+            ProgressView { Text(L10n: "正在检查苹果语言资源…") }
+                .font(.footnote)
+        }
     }
 
     private var phaseText: String {

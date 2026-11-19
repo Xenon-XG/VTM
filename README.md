@@ -11,7 +11,7 @@ Download the required models once, then recognize and translate offline on your 
 ## Features
 
 - 🎤 **Real-time voice recognition** — OpenAI Whisper (ggml), 99 languages
-- 🌐 **Multilingual translation** — Google ML Kit (zh↔en) + Meta NLLB-200 ONNX (200 languages)
+- 🌐 **Multilingual translation** — Google ML Kit by default, optional Apple system translation on iOS 26+, and Meta NLLB-200 ONNX for additional languages
 - 🔊 **Text-to-speech** — Native AVSpeechSynthesizer with natural pronunciation
 - 🔒 **100% offline** — No data collection. No tracking. Everything stays on your device.
 - 🌍 **5 UI languages** — 中文 / English / 日本語 / 한국어 / Français
@@ -52,6 +52,10 @@ Download one **Whisper** model for speech recognition and the **Offline Translat
 Language Packs** for the languages you use with ML Kit. English is built in. For
 Chinese ↔ Japanese, download Chinese and Japanese once; both directions use the
 same packs. Download over Wi-Fi with VTM in the foreground.
+
+On iOS 26 and later, you can choose **Apple System Translation** instead. It uses
+separate iOS language downloads. Install them before translating; starting live
+interpretation does not request any downloads. Language support depends on iOS.
 
 📖 [Download PDF User Guide](VTM-User-Guide.pdf) (Chinese)
 

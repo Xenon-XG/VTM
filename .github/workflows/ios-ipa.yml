@@ -47,6 +47,13 @@ jobs:
             Tests/OfflinePackPolicySmoke.swift -o "$RUNNER_TEMP/vtm-offline-pack-tests"
           "$RUNNER_TEMP/vtm-offline-pack-tests"
 
+      - name: Test Apple translation engine selection and pair policy
+        run: |
+          xcrun swiftc -parse-as-library \
+            VTM/Services/Translation/AppleTranslationPolicy.swift \
+            Tests/AppleTranslationPolicySmoke.swift -o "$RUNNER_TEMP/vtm-apple-translation-tests"
+          "$RUNNER_TEMP/vtm-apple-translation-tests"
+
       - name: Stage iOS arm64 native frameworks
         run: |
           work="$(mktemp -d "${RUNNER_TEMP}/vtm-frameworks.XXXXXX")"
@@ -114,7 +121,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            'OTHER_LDFLAGS=$(inherited) -framework CoreML -framework Accelerate' \
+            'OTHER_LDFLAGS=$(inherited) -framework CoreML -framework Accelerate -weak_framework Translation' \
             build | tee "$RUNNER_TEMP/vtm-xcodebuild.log"
 
       - name: Validate and package unsigned IPA
@@ -122,6 +129,16 @@ jobs:
           app="$RUNNER_TEMP/vtm-derived-data/Build/Products/Release-iphoneos/VTM.app"
           test -f "$app/Info.plist"
           test -x "$app/VTM"
+          # Translation.framework is newer than the app's iOS 17.4 deployment target.
+          # Fail if it ever becomes a mandatory loader dependency on older phones.
+          xcrun otool -l "$app/VTM" | awk '
+            $1 == "cmd" { command = $2 }
+            $1 == "name" && $2 ~ /Translation.framework\/Translation$/ {
+              found = 1
+              if (command != "LC_LOAD_WEAK_DYLIB") bad = 1
+            }
+            END { exit (!found || bad) }
+          '
           test "$(xcrun lipo -archs "$app/VTM")" = arm64
           xcrun vtool -show-build "$app/VTM" | grep -iE 'platform[[:space:]]+iOS[[:space:]]*$'
           test -f "$app/Frameworks/whisper.framework/whisper"

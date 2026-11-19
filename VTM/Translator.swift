@@ -25,6 +25,7 @@ final class Translator: ObservableObject {
     @Published var translatedText: String = ""
     @Published var isTranslating: Bool = false
     @Published var isNLLBLoading: Bool = false
+    @Published private(set) var preferredEngine = VTMTranslationEngine.storedPreference
 
     /// 源语言（短代码 "zh"/"en" 等，@Published 直接驱动 UI 刷新）
     @Published var sourceLanguage: String = "zh"
@@ -66,8 +67,10 @@ final class Translator: ObservableObject {
         let newTarget = Self.normalizeBCP47(
             UserDefaults.standard.string(forKey: "targetLanguage") ?? "en-US"
         )
+        let newEngine = VTMTranslationEngine.storedPreference
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            if self.preferredEngine != newEngine { self.preferredEngine = newEngine }
             if self.sourceLanguage != newSource || self.targetLanguage != newTarget {
                 self.sourceLanguage = newSource
                 self.targetLanguage = newTarget
@@ -127,6 +130,11 @@ final class Translator: ObservableObject {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             completion(.success(""))
+            return
+        }
+
+        if VTMTranslationEngine.storedPreference == .apple {
+            translateUsingApple(text: trimmed, source: sourceLanguage, target: targetLanguage, completion: completion)
             return
         }
 
@@ -202,9 +210,39 @@ final class Translator: ObservableObject {
         }
     }
 
+    private func translateUsingApple(
+        text: String, source: String, target: String, completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        Task { @MainActor in
+            self.isTranslating = true
+            let result: Result<String, Error>
+            do {
+                let value = try await self.appleTranslation(text: text, source: source, target: target)
+                self.translatedText = value
+                result = .success(value)
+            } catch {
+                self.translatedText = ""
+                result = .failure(error)
+            }
+            self.isTranslating = false
+            completion(result)
+        }
+    }
+
+    private func appleTranslation(text: String, source: String, target: String) async throws -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        let translate = try await AppleSystemTranslator.preparePair(source: source, target: target)
+        return try await translate(trimmed)
+    }
+
     /// 翻译文本 — 指定源语言和目标语言（对话模式专用）
     /// 临时切换语言对 → 执行翻译 → 恢复原语言对
     func translate(text: String, source: String, target: String, completion: @escaping (Result<String, Error>) -> Void) {
+        if VTMTranslationEngine.storedPreference == .apple {
+            translateUsingApple(text: text, source: source, target: target, completion: completion)
+            return
+        }
         let oldSource = sourceLanguage
         let oldTarget = targetLanguage
         setLanguages(source: source, target: target)
@@ -215,19 +253,33 @@ final class Translator: ObservableObject {
     }
 
     @MainActor
-    func prepareContinuousDirections(languageA: String, languageB: String) async throws
-        -> (aToB: ContinuousTranslation, bToA: ContinuousTranslation) {
-        guard languageA != languageB,
-              TranslationRouter.isMLKitSupported(sourceLang: languageA, targetLang: languageB),
-              router.mlKitEngine.isReady else {
-            throw TranslatorError.engineNotReady("ML Kit")
-        }
+    func prepareContinuousDirections(
+        languageA: String, languageB: String, engine: VTMTranslationEngine? = nil
+    ) async throws -> (aToB: ContinuousTranslation, bToA: ContinuousTranslation) {
+        let requested = engine ?? VTMTranslationEngine.storedPreference
         guard !isNLLBLoading, !router.nllbEngine.isTranslating else { throw TranslatorError.continuousEngineBusy }
-        // Both directions use the same pair of language models. Keep a separate
-        // prepared native translator per direction for the duration of this session.
-        let aToB = try await router.mlKitEngine.prepareContinuousPair(source: languageA, target: languageB)
+
+        // Keep one explicit, installed-only translator per direction. Selection
+        // is immutable for the session; never route Apple errors through ML Kit.
+        let prepare: @MainActor (String, String) async throws -> ContinuousTranslation
+        switch requested {
+        case .mlKit:
+            guard languageA != languageB,
+                  TranslationRouter.isMLKitSupported(sourceLang: languageA, targetLang: languageB),
+                  router.mlKitEngine.isReady else {
+                throw TranslatorError.engineNotReady("ML Kit")
+            }
+            prepare = { source, target in
+                try await self.router.mlKitEngine.prepareContinuousPair(source: source, target: target)
+            }
+        case .apple:
+            prepare = { source, target in
+                try await AppleSystemTranslator.preparePair(source: source, target: target)
+            }
+        }
+        let aToB = try await prepare(languageA, languageB)
         try Task.checkCancellation()
-        let bToA = try await router.mlKitEngine.prepareContinuousPair(source: languageB, target: languageA)
+        let bToA = try await prepare(languageB, languageA)
         try Task.checkCancellation()
         guard !isNLLBLoading, !router.nllbEngine.isTranslating else { throw TranslatorError.continuousEngineBusy }
         if router.nllbEngine.isReady {
@@ -245,6 +297,12 @@ final class Translator: ObservableObject {
 
         await MainActor.run { self.isTranslating = true }
         defer { Task { @MainActor in self.isTranslating = false } }
+
+        if VTMTranslationEngine.storedPreference == .apple {
+            let result = try await appleTranslation(text: trimmed, source: sourceLanguage, target: targetLanguage)
+            await MainActor.run { self.translatedText = result }
+            return result
+        }
 
         let engine = router.selectEngine(for: sourceLanguage, targetLang: targetLanguage)
 
@@ -333,8 +391,10 @@ final class Translator: ObservableObject {
     }
 
     /// 当前语言对是否由 ML Kit 处理
+    var isUsingApple: Bool { preferredEngine == .apple }
+
     var isUsingMLKit: Bool {
-        TranslationRouter.isMLKitSupported(
+        !isUsingApple && TranslationRouter.isMLKitSupported(
             sourceLang: sourceLanguage,
             targetLang: targetLanguage
         )
@@ -342,6 +402,7 @@ final class Translator: ObservableObject {
 
     /// 当前活跃引擎名称
     var activeEngineName: LocalizedStringKey {
+        if isUsingApple { return "Apple 系统翻译" }
         if TranslationRouter.isMLKitSupported(
             sourceLang: sourceLanguage,
             targetLang: targetLanguage

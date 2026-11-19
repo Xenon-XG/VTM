@@ -46,6 +46,7 @@ struct TranslationView: View {
 
     /// 行内语言选择器
     @State private var showSourceLanguagePicker = false
+    @State private var showAppleTranslationPacks = false
     @State private var showTargetLanguagePicker = false
 
     /// 复制成功 toast
@@ -177,6 +178,16 @@ struct TranslationView: View {
             isTranscribing = false
             speechRecognizer.cancelManualRecording()
         }
+        .sheet(isPresented: $showAppleTranslationPacks) {
+            NavigationStack {
+                AppleTranslationPacksView(source: translator.sourceLanguage, target: translator.targetLanguage)
+                    .toolbar {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button { showAppleTranslationPacks = false } label: { Text(L10n: "完成") }
+                        }
+                    }
+            }
+        }
         // 行内语言选择器 Sheet
         .sheet(isPresented: $showSourceLanguagePicker) {
             LanguagePickerView(
@@ -268,53 +279,64 @@ struct TranslationView: View {
                     badge: "必需"
                 )
 
-                // ML Kit 主力翻译引擎
-                if translator.isUsingMLKit {
-                    if translator.isMLKitDownloading {
+                if translator.isUsingApple {
+                    Button {
+                        showAppleTranslationPacks = true
+                    } label: {
+                        Label(L10n: "Apple 系统翻译", systemImage: "apple.logo")
+                            .font(.caption2.weight(.medium))
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(speechRecognizer.isRecording || isTranscribing)
+                } else {
+                    // ML Kit 主力翻译引擎
+                    if translator.isUsingMLKit {
+                        if translator.isMLKitDownloading {
+                            engineChip(
+                                icon: "arrow.down.circle.fill",
+                                label: "ML Kit · 下载中",
+                                isReady: false
+                            )
+                        } else {
+                            engineChip(
+                                icon: "sparkles",
+                                label: LocalizedStringKey(translator.isMLKitReady ? "ML Kit" : "ML Kit (待下载)"),
+                                isReady: translator.isMLKitReady
+                            )
+                        }
+                    }
+
+                    // NLLB 后备引擎
+                    if translator.isNLLBReady {
                         engineChip(
-                            icon: "arrow.down.circle.fill",
-                            label: "ML Kit · 下载中",
-                            isReady: false
+                            icon: "globe.asia.australia.fill",
+                            label: LocalizedStringKey(translator.isUsingMLKit ? "NLLB 后备" : "NLLB-200"),
+                            isReady: true,
+                            isFallback: translator.isUsingMLKit,
+                            badge: "后备"
+                        )
+                    } else if translator.isNLLBLoading {
+                        engineChip(
+                            icon: "hourglass",
+                            label: "NLLB · 加载中",
+                            isReady: false,
+                            badge: "后备"
+                        )
+                    } else if translator.isNLLBDownloaded {
+                        engineChip(
+                            icon: "tray.full",
+                            label: "NLLB · 备用",
+                            isReady: false,
+                            badge: "后备"
                         )
                     } else {
                         engineChip(
-                            icon: "sparkles",
-                            label: LocalizedStringKey(translator.isMLKitReady ? "ML Kit" : "ML Kit (待下载)"),
-                            isReady: translator.isMLKitReady
+                            icon: "globe.asia.australia.fill",
+                            label: "NLLB",
+                            isReady: false,
+                            badge: "后备"
                         )
                     }
-                }
-
-                // NLLB 后备引擎
-                if translator.isNLLBReady {
-                    engineChip(
-                        icon: "globe.asia.australia.fill",
-                        label: LocalizedStringKey(translator.isUsingMLKit ? "NLLB 后备" : "NLLB-200"),
-                        isReady: true,
-                        isFallback: translator.isUsingMLKit,
-                        badge: "后备"
-                    )
-                } else if translator.isNLLBLoading {
-                    engineChip(
-                        icon: "hourglass",
-                        label: "NLLB · 加载中",
-                        isReady: false,
-                        badge: "后备"
-                    )
-                } else if translator.isNLLBDownloaded {
-                    engineChip(
-                        icon: "tray.full",
-                        label: "NLLB · 备用",
-                        isReady: false,
-                        badge: "后备"
-                    )
-                } else {
-                    engineChip(
-                        icon: "globe.asia.australia.fill",
-                        label: "NLLB",
-                        isReady: false,
-                        badge: "后备"
-                    )
                 }
             }
         }
