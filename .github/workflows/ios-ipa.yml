@@ -1,0 +1,131 @@
+name: Build iOS IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - ci/ios-ipa
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vtm-ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  device-ipa:
+    runs-on: macos-26
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Check out VTM
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Check Xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -version | grep -E '^Xcode 26([. ]|$)'
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Stage iOS arm64 native frameworks
+        run: |
+          work="$(mktemp -d "${RUNNER_TEMP}/vtm-frameworks.XXXXXX")"
+          trap 'rm -rf "$work"' EXIT
+          curl --fail --location --silent --show-error --retry 3 \
+            'https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.3/whisper-v1.8.3-xcframework.zip' \
+            -o "$work/whisper.zip"
+          curl --fail --location --silent --show-error --retry 3 \
+            'https://download.onnxruntime.ai/pod-archive-onnxruntime-c-1.26.0.zip' \
+            -o "$work/onnxruntime.zip"
+          (
+            cd "$work"
+            shasum -a 256 -c <<'SUMS'
+          a970006f256c8e689bc79e73f7fa7ddb8c1ed2703ad43ee48eb545b5bb6de6af  whisper.zip
+          08502ec252f6f03ebee6e729cbe0525c777b47daa76d3bc8c04bba82201d8a36  onnxruntime.zip
+          SUMS
+            unzip -q whisper.zip 'build-apple/whisper.xcframework/ios-arm64/whisper.framework/*'
+            unzip -q onnxruntime.zip 'onnxruntime.xcframework/ios-arm64/onnxruntime.framework/*'
+          )
+          mkdir -p Frameworks
+          cp -R "$work/build-apple/whisper.xcframework/ios-arm64/whisper.framework" Frameworks/
+          cp -R "$work/onnxruntime.xcframework/ios-arm64/onnxruntime.framework" Frameworks/
+          test "$(xcrun lipo -archs Frameworks/whisper.framework/whisper)" = arm64
+          test "$(xcrun lipo -archs Frameworks/onnxruntime.framework/onnxruntime)" = arm64
+
+      - name: Install locked CocoaPods dependencies
+        run: |
+          pod --version
+          pod install --deployment
+          # Apply the Podfile's ML Kit resource path repair even if CocoaPods
+          # writes the integration scripts after its post_install hook.
+          python3 - <<'PY'
+          from pathlib import Path
+          root = Path("Pods/Target Support Files/Pods-VTM")
+          old = "${PODS_CONFIGURATION_BUILD_DIR}/MLKitTranslate/MLKitTranslate_resource.bundle"
+          new = "${PODS_ROOT}/MLKitTranslate/Frameworks/MLKitTranslate.framework/MLKitTranslate_resource.bundle"
+          for path in [root / "Pods-VTM-resources.sh", *root.glob("Pods-VTM-resources-*-input-files.xcfilelist")]:
+              contents = path.read_text()
+              if old in contents:
+                  path.write_text(contents.replace(old, new))
+          PY
+
+      - name: Compile for iPhone
+        run: |
+          xcodebuild \
+            -workspace VTM.xcworkspace \
+            -scheme VTM \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/vtm-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/vtm-build.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            'OTHER_LDFLAGS=$(inherited) -framework CoreML -framework Accelerate' \
+            build | tee "$RUNNER_TEMP/vtm-xcodebuild.log"
+
+      - name: Validate and package unsigned IPA
+        run: |
+          app="$RUNNER_TEMP/vtm-derived-data/Build/Products/Release-iphoneos/VTM.app"
+          test -f "$app/Info.plist"
+          test -x "$app/VTM"
+          test "$(xcrun lipo -archs "$app/VTM")" = arm64
+          xcrun vtool -show-build "$app/VTM" | grep -iE 'platform[[:space:]]+iOS[[:space:]]*$'
+          test -f "$app/Frameworks/whisper.framework/whisper"
+          test -n "$(find "$app" -type d -name 'MLKitTranslate_resource.bundle' -print -quit)"
+          test -n "$(find "$app" -type f -name 'ggml-tiny.bin' -print -quit)"
+          stage="$(mktemp -d "${RUNNER_TEMP}/vtm-ipa.XXXXXX")"
+          mkdir -p "$stage/Payload" dist
+          ditto "$app" "$stage/Payload/VTM.app"
+          ipa="$PWD/dist/VTM-iOS-arm64-unsigned.ipa"
+          (cd "$stage" && zip -qry "$ipa" Payload)
+          unzip -tq "$ipa"
+          (cd dist && shasum -a 256 VTM-iOS-arm64-unsigned.ipa > SHA256SUMS.txt)
+          echo 'Built unsigned VTM IPA for iPhone (arm64); not directly installable through normal iOS installation.' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: VTM-iOS-arm64-unsigned
+          path: |
+            dist/VTM-iOS-arm64-unsigned.ipa
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: VTM-iOS-build-log
+          path: ${{ runner.temp }}/vtm-xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
