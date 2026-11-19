@@ -55,8 +55,6 @@ struct VTMApp: App {
 
                             VTMLog.app("🚀 VTM 启动")
 
-                            ActivationManager.shared.setFirstLaunchDateIfNeeded()
-
                             Task {
                                 VTMLog.model("🔄 自动加载 Whisper 模型...")
                                 await sr.loadDefaultModel()

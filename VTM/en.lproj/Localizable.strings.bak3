@@ -36,7 +36,6 @@
 "删除模型" = "Delete Model";
 "前往设置" = "Go to Settings";
 "前往设置下载模型" = "Go to Settings to download models";
-"剩余 %d 天免费试用" = "%d days remaining in trial";
 "加载中" = "Loading";
 "去下载" = "Download";
 "取消" = "Cancel";
@@ -68,7 +67,6 @@
 "已就绪" = "Ready";
 "已清空历史" = "History Cleared";
 "已清除所有模型缓存" = "All model caches cleared";
-"已激活 ✓" = "Activated ✓";
 "已连接" = "Connected";
 "已连接 Wi-Fi — 可放心下载" = "Wi-Fi Connected — Safe to download";
 "已重置" = "Reset Complete";
@@ -135,11 +133,6 @@
 "清除所有模型缓存" = "Clear All Model Caches";
 "清除缓存" = "Clear Cache";
 "清除翻译历史" = "Clear Translation History";
-"激活" = "Activate";
-"激活 VTM" = "Activate VTM";
-"激活成功" = "Activation Successful";
-"激活码" = "Activation Code";
-"激活码无效" = "Invalid Activation Code";
 "版本" = "Version";
 "用 VTM 翻译" = "Translate with VTM";
 "用户责任" = "User Responsibilities";
@@ -149,7 +142,6 @@
 "确认清除" = "Confirm Clear";
 "离线语音识别引擎" = "Offline Speech Recognition Engine";
 "空闲" = "Idle";
-"立即激活" = "Activate Now";
 "管理语音识别和翻译模型" = "Manage speech recognition and translation models";
 "翻译" = "Translation";
 "翻译历史" = "Translation History";
@@ -172,8 +164,6 @@
 "识别中" = "Recognizing";
 "识别文字" = "Recognize Text";
 "识别结果" = "Recognition";
-"试用已到期" = "Trial Expired";
-"试用状态" = "Trial Status";
 "详情" = "Details";
 "语言对" = "Language Pair";
 "语言离线翻译后备引擎" = "Offline Translation Backup Engine";
@@ -186,7 +176,6 @@
 "说话人 B" = "Speaker B";
 "请阅读并同意我们的隐私政策和使用条款以继续使用" = "Please read and agree to our Privacy Policy and Terms of Use";
 "跟随系统" = "Follow System";
-"输入激活码" = "Enter Activation Code";
 "选择文字区域" = "Select text region";
 "选择源语言" = "Select Source Language";
 "选择目标语言" = "Select Target Language";

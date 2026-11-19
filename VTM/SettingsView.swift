@@ -2,7 +2,7 @@
 //  SettingsView.swift
 //  VTM
 //
-//  设置页面：外观 → 激活 → 模型 → 语言 → 翻译 → Siri → 关于
+//  设置页面：外观 → 模型 → 语言 → 翻译 → Siri → 关于
 //
 
 import SwiftUI
@@ -16,8 +16,6 @@ struct SettingsView: View {
     @AppStorage("conversationMode") private var conversationMode = false
     @AppStorage("appColorScheme") private var appColorScheme = "system"
     @AppStorage("appLanguage") private var appLanguage = "zh-Hans"
-    @State private var showActivationSheet = false
-    @StateObject private var activationManager = ActivationManager.shared
 
     let languages: [(String, String)] = [
         ("中文", "zh-CN"),
@@ -48,11 +46,6 @@ struct SettingsView: View {
                         HStack { Image(systemName: "moon"); Text(L10n: "深色模式") }.tag("dark")
                     } label: { Text(L10n: "外观模式") }
                 } header: { Text(L10n: "外观") }
-
-                // MARK: - 激活
-                Section {
-                    activationSection
-                } header: { Text(L10n: "激活") }
 
                 // MARK: - 模型 & 数据（提前到这里，用户能一眼看到）
                 Section {
@@ -172,37 +165,6 @@ struct SettingsView: View {
                 } header: { Text(L10n: "关于") }
             }
             .navigationTitle(Text(L10n: "设置"))
-            .sheet(isPresented: $showActivationSheet) {
-                ActivationCodeSheet()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .vtmActivationDidComplete)) { _ in
-                activationManager.refreshState()
-            }
-        }
-    }
-
-    // MARK: - 激活区域
-    private var activationSection: some View {
-        HStack {
-            Label {
-                if activationManager.isActivated {
-                    Text(L10n: "已激活 ✓").foregroundColor(.green)
-                } else {
-                    let days = activationManager.trialDaysRemaining
-                    Text("剩余 \(days) 天免费试用").foregroundColor(.blue)
-                }
-            } icon: {
-                Image(systemName: activationManager.isActivated ? "checkmark.seal.fill" : "key.fill")
-                    .foregroundColor(activationManager.isActivated ? .green : .orange)
-            }
-            Spacer()
-            if !activationManager.isActivated {
-                Button { showActivationSheet = true } label: {
-                    Text(L10n: "立即激活")
-                }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-            }
         }
     }
 

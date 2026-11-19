@@ -531,13 +531,6 @@
     "ko": "설정에서 다운로드",
     "fr": "Télécharger dans Réglages"
   },
-  "剩余 %d 天免费试用": {
-    "zh-Hans": "剩余 %d 天免费试用",
-    "en": "%d days remaining in trial",
-    "ja": "残り%d日間無料トライアル",
-    "ko": "무료 평가판 %d일 남음",
-    "fr": "Essai gratuit : %d jours restants"
-  },
   "加载": {
     "zh-Hans": "加载",
     "en": "Loading",
@@ -860,13 +853,6 @@
     "ko": "All model caches cleared",
     "fr": "All model caches cleared"
   },
-  "已激活 ✓": {
-    "zh-Hans": "已激活 ✓",
-    "en": "Activated ✓",
-    "ja": "アクティベート済 ✓",
-    "ko": "활성화됨 ✓",
-    "fr": "Activé ✓"
-  },
   "已连接": {
     "zh-Hans": "已连接",
     "en": "Connected",
@@ -1006,13 +992,6 @@
     "ja": "お客様の権利",
     "ko": "귀하의 권리",
     "fr": "Vos droits"
-  },
-  "感谢您的支持！VTM 已永久激活。": {
-    "zh-Hans": "感谢您的支持！VTM 已永久激活。",
-    "en": "Thank you for your support! VTM is now permanently activated.",
-    "ja": "ご支援ありがとうございます！",
-    "ko": "지원해 주셔서 감사합니다!",
-    "fr": "Merci pour votre soutien !"
   },
   "我们不会出售您的个人信息。我们可能在以下情况下共享您的信息：\\n\\n1. 经您同意：在您同意的情况下，我们可能与第三方共享您的信息。\\n\\n2. 服务提供商：我们可能与帮助我们从事实翻译服务的服务提供商共享信息。\\n\\n3. 法律要求：如果法律要求或为了保护我们的权利，我们可能会披露您的信息。": {
     "zh-Hans": "我们不会出售您的个人信息。我们可能在以下情况下共享您的信息：\n\n1. 经您同意：在您同意的情况下，我们可能与第三方共享您的信息。\n\n2. 服务提供商：我们可能与帮助我们从事实翻译服务的服务提供商共享信息。\n\n3. 法律要求：如果法律要求或为了保护我们的权利，我们可能会披露您的信息。",
@@ -1504,48 +1483,6 @@
     "ko": "원본 언어",
     "fr": "Langue source"
   },
-  "激活": {
-    "zh-Hans": "激活",
-    "en": "Activate",
-    "ja": "アクティベーション",
-    "ko": "활성화",
-    "fr": "Activation"
-  },
-  "激活 VTM": {
-    "zh-Hans": "激活 VTM",
-    "en": "Activate VTM",
-    "ja": "VTMをアクティベート",
-    "ko": "VTM 활성화",
-    "fr": "Activer VTM"
-  },
-  "激活成功": {
-    "zh-Hans": "激活成功",
-    "en": "Activation Successful",
-    "ja": "アクティベーション成功",
-    "ko": "활성화 성공",
-    "fr": "Activation réussie"
-  },
-  "激活状态": {
-    "zh-Hans": "激活状态",
-    "en": "Activation Status",
-    "ja": "アクティベーション状態",
-    "ko": "활성화 상태",
-    "fr": "Statut d'activation"
-  },
-  "激活码": {
-    "zh-Hans": "激活码",
-    "en": "Activation Code",
-    "ja": "アクティベーションコード",
-    "ko": "활성화 코드",
-    "fr": "Code d'activation"
-  },
-  "激活码无效": {
-    "zh-Hans": "激活码无效",
-    "en": "Invalid Activation Code",
-    "ja": "無効なコード",
-    "ko": "유효하지 않은 코드",
-    "fr": "Code invalide"
-  },
   "版本": {
     "zh-Hans": "版本",
     "en": "Version",
@@ -1629,13 +1566,6 @@
     "ja": "アイドル",
     "ko": "유휴",
     "fr": "Inactif"
-  },
-  "立即激活": {
-    "zh-Hans": "立即激活",
-    "en": "Activate Now",
-    "ja": "今すぐアクティベート",
-    "ko": "지금 활성화",
-    "fr": "Activer maintenant"
   },
   "策略": {
     "zh-Hans": "策略",
@@ -1854,20 +1784,6 @@
     "ko": "Recognition",
     "fr": "Recognition"
   },
-  "试用已到期": {
-    "zh-Hans": "试用已到期",
-    "en": "Trial Expired",
-    "ja": "トライアル期間終了",
-    "ko": "평가판 만료",
-    "fr": "Essai expiré"
-  },
-  "试用状态": {
-    "zh-Hans": "试用状态",
-    "en": "Trial Status",
-    "ja": "トライアル状態",
-    "ko": "평가판 상태",
-    "fr": "Statut de l'essai"
-  },
   "详情": {
     "zh-Hans": "详情",
     "en": "Details",
@@ -1966,13 +1882,6 @@
     "ko": "화자 B",
     "fr": "Interlocuteur B"
   },
-  "请输入 12 位激活码以获取永久使用权": {
-    "zh-Hans": "请输入 12 位激活码以获取永久使用权",
-    "en": "Enter 12-digit activation code for permanent access",
-    "ja": "12桁のコードを入力してください",
-    "ko": "12자리 코드를 입력하세요",
-    "fr": "Entrez le code à 12 chiffres"
-  },
   "请阅读并同意我们的隐私政策和使用条款以继续使用": {
     "zh-Hans": "请阅读并同意我们的隐私政策和使用条款以继续使用",
     "en": "Please read and agree to our Privacy Policy and Terms of Use",
@@ -2000,13 +1909,6 @@
     "ja": "Slower (CPU inference, ~3-10s for short texts)",
     "ko": "Slower (CPU inference, ~3-10s for short texts)",
     "fr": "Slower (CPU inference, ~3-10s for short texts)"
-  },
-  "输入激活码": {
-    "zh-Hans": "输入激活码",
-    "en": "Enter Activation Code",
-    "ja": "コードを入力",
-    "ko": "코드 입력",
-    "fr": "Entrer le code"
   },
   "选择文字区域": {
     "zh-Hans": "选择文字区域",
