@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   device-ipa:
-    runs-on: macos-26
+    runs-on: macos-26-intel
     timeout-minutes: 30
     defaults:
       run:
