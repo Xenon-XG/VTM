@@ -50,7 +50,7 @@ struct ModelManagementView: View {
                     title: "Whisper",
                     subtitle: "离线语音识别引擎",
                     status: whisperStatus,
-                    sizeMB: "~466 MB",
+                    sizeMB: "181–547 MiB",
                     infoType: .whisper
                 ) {
                     ForEach(WhisperModel.availableModels) { model in
@@ -264,7 +264,7 @@ struct ModelManagementView: View {
                             description: "OpenAI 开源的高精度语音识别模型，由 ggerganov/whisper.cpp 移植到 C/C++。",
                             details: [
                                 ("模型", "small (F16)"),
-                                ("大小", "~466 MB"),
+                                ("大小", "181 / 466 / 547 MiB"),
                                 ("精度", "高精度，适合真实场景"),
                                 ("语言", "多语言自动检测"),
                                 ("协议", "MIT 开源"),

@@ -25,10 +25,14 @@ final class ContinuousSpeechCapture: ObservableObject {
 
     func start(
         recognizer: SpeechRecognizer,
-        sourceLanguage: String,
-        onTranscript: @escaping @MainActor (String) async -> Void
+        model: WhisperModel,
+        languages: (String, String),
+        onTranscript: @escaping @MainActor (String, String) async -> Void,
+        onUnroutable: @escaping @MainActor () -> Void
     ) async throws {
         guard !isRunning, !isStarting, !isFinishing else { throw LiveSpeechError.alreadyRecording }
+        let languagePair = try ContinuousLanguagePair(languages)
+        guard model.fileExists() else { throw LiveSpeechError.selectedModelNotDownloaded }
         let owner = UUID()
         generation = owner
         isStarting = true
@@ -46,7 +50,7 @@ final class ContinuousSpeechCapture: ObservableObject {
             try recognizer.claimContinuousMicrophone(owner: owner)
             self.recognizer = recognizer
             captureOwner = owner
-            try await recognizer.prepareContinuousRecognition()
+            try await recognizer.prepareContinuousRecognition(model: model, owner: owner)
             try ensureCurrent(owner)
             guard UIApplication.shared.applicationState == .active else {
                 throw LiveSpeechError.needsForeground
@@ -96,11 +100,18 @@ final class ContinuousSpeechCapture: ObservableObject {
                 for await samples in stream.stream {
                     guard !Task.isCancelled, self?.generation == owner, let recognizer else { break }
                     do {
-                        let text = try await recognizer.transcribeContinuous(
-                            samples: samples, sourceLanguage: sourceLanguage, owner: owner
+                        let result = try await recognizer.transcribeContinuous(
+                            samples: samples, languages: languagePair, owner: owner
                         )
                         guard !Task.isCancelled, self?.generation == owner else { break }
-                        if !text.isEmpty { await onTranscript(text) }
+                        switch result {
+                        case let .recognized(text, sourceLanguage):
+                            if !text.isEmpty { await onTranscript(text, sourceLanguage) }
+                        case .unroutable:
+                            onUnroutable()
+                        case .empty:
+                            break
+                        }
                     } catch is CancellationError {
                         break
                     } catch {
@@ -214,6 +225,8 @@ nonisolated enum LiveSpeechError: LocalizedError {
     case microphoneUnavailable
     case microphoneInterrupted
     case modelUnavailable
+    case selectedModelNotDownloaded
+    case invalidLanguagePair
 
     @MainActor var localizedMessage: String {
         AppStrings.shared.get(errorDescription ?? "同传失败，请重试。")
@@ -227,6 +240,8 @@ nonisolated enum LiveSpeechError: LocalizedError {
         case .microphoneUnavailable: return "无法使用当前麦克风。"
         case .microphoneInterrupted: return "麦克风连接已改变或中断，请重新开始。"
         case .modelUnavailable: return "语音识别模型尚未就绪，请先下载并加载 Whisper 模型。"
+        case .selectedModelNotDownloaded: return "选中的识别模型尚未下载，请先在模型管理中下载。"
+        case .invalidLanguagePair: return "同传请选择两个不同的受支持语言。"
         }
     }
 }

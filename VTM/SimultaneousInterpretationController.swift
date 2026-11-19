@@ -11,6 +11,7 @@ final class SimultaneousInterpretationController: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published private(set) var translationInProgress = false
     @Published private(set) var droppedSegments = 0
+    @Published private(set) var hasUnroutablePhrase = false
 
     private let capture = ContinuousSpeechCapture()
     private var captureObservers: Set<AnyCancellable> = []
@@ -51,10 +52,11 @@ final class SimultaneousInterpretationController: ObservableObject {
             .store(in: &captureObservers)
     }
 
-    func start(recognizer: SpeechRecognizer, translator: Translator, source: String, target: String) {
-        guard phase == .idle, source != target else { return }
+    func start(recognizer: SpeechRecognizer, translator: Translator, model: WhisperModel, languageA: String, languageB: String) {
+        guard phase == .idle, languageA != languageB else { return }
         errorMessage = nil
         droppedSegments = 0
+        hasUnroutablePhrase = false
         segments.removeAll()
         let id = UUID()
         sessionID = id
@@ -62,13 +64,31 @@ final class SimultaneousInterpretationController: ObservableObject {
         startTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let translate = try await translator.prepareContinuousPair(source: source, target: target)
+                let directions = try await translator.prepareContinuousDirections(languageA: languageA, languageB: languageB)
                 try Task.checkCancellation()
                 guard self.sessionID == id else { return }
                 self.phase = .starting
-                try await self.capture.start(recognizer: recognizer, sourceLanguage: source) { [weak self] transcript in
-                    await self?.translate(transcript, using: translate, source: source, target: target, session: id)
-                }
+                try await self.capture.start(
+                    recognizer: recognizer,
+                    model: model,
+                    languages: (languageA, languageB),
+                    onTranscript: { [weak self] transcript, detected in
+                        guard let self, self.sessionID == id else { return }
+                        if detected == languageA {
+                            await self.translate(transcript, using: directions.aToB,
+                                                 source: languageA, target: languageB, session: id)
+                        } else if detected == languageB {
+                            await self.translate(transcript, using: directions.bToA,
+                                                 source: languageB, target: languageA, session: id)
+                        } else {
+                            self.hasUnroutablePhrase = true
+                        }
+                    },
+                    onUnroutable: { [weak self] in
+                        guard let self, self.sessionID == id else { return }
+                        self.hasUnroutablePhrase = true
+                    }
+                )
                 guard self.sessionID == id else { return }
                 guard self.capture.isRunning else {
                     self.stop()
@@ -138,6 +158,7 @@ final class SimultaneousInterpretationController: ObservableObject {
         guard sessionID == session, phase != .idle else { return }
         let original = String(raw.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4_000))
         guard !original.isEmpty else { return }
+        hasUnroutablePhrase = false
         var segment = InterpretationSegment(source: source, target: target, original: original)
         segments.append(segment)
         if segments.count > 50 { segments.removeFirst(segments.count - 50) }

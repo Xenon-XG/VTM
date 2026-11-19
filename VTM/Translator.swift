@@ -209,21 +209,26 @@ final class Translator: ObservableObject {
     }
 
     @MainActor
-    func prepareContinuousPair(source: String, target: String) async throws -> ContinuousTranslation {
-        guard source != target,
-              TranslationRouter.isMLKitSupported(sourceLang: source, targetLang: target),
+    func prepareContinuousDirections(languageA: String, languageB: String) async throws
+        -> (aToB: ContinuousTranslation, bToA: ContinuousTranslation) {
+        guard languageA != languageB,
+              TranslationRouter.isMLKitSupported(sourceLang: languageA, targetLang: languageB),
               router.mlKitEngine.isReady else {
             throw TranslatorError.engineNotReady("ML Kit")
         }
         guard !isNLLBLoading, !router.nllbEngine.isTranslating else { throw TranslatorError.continuousEngineBusy }
-        let translate = try await router.mlKitEngine.prepareContinuousPair(source: source, target: target)
+        // Both directions use the same pair of language models. Keep a separate
+        // prepared native translator per direction for the duration of this session.
+        let aToB = try await router.mlKitEngine.prepareContinuousPair(source: languageA, target: languageB)
+        try Task.checkCancellation()
+        let bToA = try await router.mlKitEngine.prepareContinuousPair(source: languageB, target: languageA)
         try Task.checkCancellation()
         guard !isNLLBLoading, !router.nllbEngine.isTranslating else { throw TranslatorError.continuousEngineBusy }
         if router.nllbEngine.isReady {
             router.nllbEngine.unload()
             currentModelName = nil
         }
-        return translate
+        return (aToB, bToA)
     }
 
     /// 异步翻译 (Swift Concurrency)

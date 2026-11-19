@@ -40,7 +40,7 @@ struct ContentView: View {
 
             SimultaneousInterpretationView(isTabSelected: selectedTab == 2)
                 .tabItem {
-                    Label(L10n: "同声传译", systemImage: "waveform.bubble")
+                    Label(L10n: "同声传译", systemImage: "mic.fill")
                 }
                 .tag(2)
 

@@ -23,6 +23,9 @@ class SpeechRecognizer: ObservableObject {
     @Published var isModelLoaded: Bool = false
 
     private var whisperContext: WhisperContext?
+    private var loadedModelPath: String?
+    private var liveModelPath: String?
+    private var activeInferences = 0
     private var audioRecorder: AVAudioRecorder?
     private var recordingURL: URL?
     private var recordingStartTime: Date?
@@ -100,8 +103,7 @@ class SpeechRecognizer: ObservableObject {
             return
         }
         VTMLog.memory("🟡 Whisper 主动卸载，释放 ~466MB 内存")
-        whisperContext = nil
-        isModelLoaded = false
+        clearLoadedModel()
     }
 
     @objc private func handleMemoryWarning() {
@@ -111,8 +113,7 @@ class SpeechRecognizer: ObservableObject {
             return
         }
         VTMLog.memory("🟡 收到内存警告，卸载 Whisper 模型释放内存")
-        whisperContext = nil
-        isModelLoaded = false
+        clearLoadedModel()
     }
 
     @objc private func handleNLLBWillLoad() {
@@ -122,71 +123,73 @@ class SpeechRecognizer: ObservableObject {
 
     // MARK: - Model Loading
 
-    /// 加载已下载的 Whisper 模型
-    func loadModel(path: String) async {
-        // ⚠️ 防止并发加载：两个 onReceive 可能同时触发 → 双倍内存 + 竞态条件 → OOM
-        guard !isLoadingModels else {
-            VTMLog.model("⏳ 模型已在加载中，跳过重复请求")
-            return
+    private func clearLoadedModel() {
+        whisperContext = nil
+        loadedModelPath = nil
+        isModelLoaded = false
+    }
+
+    private func modelPath(_ url: URL) -> String { url.standardizedFileURL.path }
+
+    /// Wait for an existing load or a canceled decode to finish before allocating
+    /// another model. Whisper context memory must not overlap during switching.
+    private func loadNativeModel(path: String, continuousOwner owner: UUID? = nil) async throws {
+        let path = modelPath(URL(fileURLWithPath: path))
+        func validateOwner() throws {
+            try Task.checkCancellation()
+            guard continuousMicrophoneOwner == owner, audioRecorder == nil, !isFinishingRecording else {
+                throw CancellationError()
+            }
         }
 
-        var loadSucceeded = false
+        try validateOwner()
+        while isLoadingModels || activeInferences > 0 {
+            try await Task.sleep(for: .milliseconds(75))
+            try validateOwner()
+        }
+        if whisperContext != nil, loadedModelPath == path { return }
+
         isLoadingModels = true
-        defer {
-            // 失败路径：加载中途抛异常 → 复位 isLoadingModels
-            if !loadSucceeded {
-                Task { @MainActor in
-                    self.isLoadingModels = false
+        defer { isLoadingModels = false }
+        clearLoadedModel()
+        // NLLB and Whisper never need to occupy memory simultaneously.
+        NotificationCenter.default.post(name: NSNotification.Name("WhisperWillLoad"), object: nil)
+
+        let context: WhisperContext = try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    continuation.resume(returning: try WhisperContext.createContext(path: path))
+                } catch {
+                    continuation.resume(throwing: error)
                 }
             }
         }
+        try validateOwner()
+        whisperContext = context
+        loadedModelPath = path
+        isModelLoaded = true
+        errorMessage = nil
+        VTMLog.model("✅ Whisper 模型已加载: \(path)")
+    }
+
+    /// Existing push-to-talk and model management entry point.
+    func loadModel(path: String) async {
         do {
-            // ⚠️ WhisperContext.createContext 是同步 C++ 调用（加载 466MB 模型，耗时 ~10s）
-            // 必须在后台线程执行，否则阻塞主线程 → iOS Watchdog 杀进程 → 用户看到闪退
-            whisperContext = try await withCheckedThrowingContinuation { cont in
-                DispatchQueue.global(qos: .userInitiated).async {
-                    do {
-                        let ctx = try WhisperContext.createContext(path: path)
-                        cont.resume(returning: ctx)
-                    } catch {
-                        cont.resume(throwing: error)
-                    }
-                }
-            }
-            loadSucceeded = true  // 标记成功：defer 不再复位
-            await MainActor.run {
-                // 双重检查：确认上下文未被内存警告中途清除
-                if whisperContext != nil {
-                    isModelLoaded = true
-                    errorMessage = nil
-                    VTMLog.model("✅ Whisper 模型已加载: \(path)")
-                } else {
-                    VTMLog.error("⚠️ Whisper 上下文在加载后已被清除，需重新加载", category: "Model")
-                }
-                // 关键：isLoadingModels 在 isModelLoaded 设置后才关闭
-                // 防止内存警告在 isModelLoaded=true 前卸载模型
-                isLoadingModels = false
-            }
+            try await loadNativeModel(path: path)
+        } catch is CancellationError {
+            // A foreground interpreting session owns the model or the caller left.
         } catch {
-            await MainActor.run {
-                isModelLoaded = false
-                errorMessage = "模型加载失败: \(error.localizedDescription)"
-                VTMLog.error("Whisper 模型加载失败: \(error)", category: "Model")
-                isLoadingModels = false
-            }
+            errorMessage = "模型加载失败: \(error.localizedDescription)"
+            VTMLog.error("Whisper 模型加载失败: \(error)", category: "Model")
         }
     }
 
-    /// 自动查找并加载第一个已下载的模型
     func loadDefaultModel() async {
-        let downloaded = WhisperModel.downloadedModels()
-        if let model = downloaded.first {
+        guard continuousMicrophoneOwner == nil else { return }
+        if let model = WhisperModel.recommendedModel() {
             await loadModel(path: model.fileURL.path)
         } else {
-            await MainActor.run {
-                isModelLoaded = false
-                errorMessage = "未找到已下载的模型，请先下载模型"
-            }
+            errorMessage = "未找到已下载的模型，请先下载模型"
         }
     }
 
@@ -200,43 +203,57 @@ class SpeechRecognizer: ObservableObject {
     }
 
     func releaseContinuousMicrophone(owner: UUID) {
-        if continuousMicrophoneOwner == owner { continuousMicrophoneOwner = nil }
+        guard continuousMicrophoneOwner == owner else { return }
+        continuousMicrophoneOwner = nil
+        defer { liveModelPath = nil }
+        // Keep the default warm only if this session selected the exact same file.
+        // A live-only choice must not silently become the legacy tab's model.
+        if let liveModelPath, loadedModelPath == liveModelPath,
+           WhisperModel.recommendedModel().map({ modelPath($0.fileURL) }) != liveModelPath {
+            clearLoadedModel()
+        }
     }
 
-    func prepareContinuousRecognition() async throws {
-        // Startup/normal mode may already be preparing the same native model.
-        // Wait for that load instead of creating a second native context.
-        while isLoadingModels {
-            try await Task.sleep(for: .milliseconds(100))
+    func prepareContinuousRecognition(model: WhisperModel, owner: UUID) async throws {
+        guard continuousMicrophoneOwner == owner else { throw CancellationError() }
+        let path = modelPath(model.fileURL)
+        guard FileManager.default.isReadableFile(atPath: path) else {
+            throw LiveSpeechError.selectedModelNotDownloaded
         }
-        try Task.checkCancellation()
-        if whisperContext == nil {
-            NotificationCenter.default.post(name: NSNotification.Name("WhisperWillLoad"), object: nil)
-            await loadDefaultModel()
+        liveModelPath = path
+        do {
+            try await loadNativeModel(path: path, continuousOwner: owner)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            VTMLog.error("Whisper 同传模型加载失败: \(error)", category: "Model")
+            throw LiveSpeechError.modelUnavailable
         }
-        try Task.checkCancellation()
-        guard whisperContext != nil else { throw LiveSpeechError.modelUnavailable }
+        guard whisperContext != nil, loadedModelPath == path else { throw LiveSpeechError.modelUnavailable }
     }
 
-    func transcribeContinuous(samples: [Float], sourceLanguage: String, owner: UUID) async throws -> String {
+    func transcribeContinuous(
+        samples: [Float], languages: ContinuousLanguagePair, owner: UUID
+    ) async throws -> ContinuousSpeechResult {
         guard continuousMicrophoneOwner == owner else { throw CancellationError() }
-        guard let context = whisperContext else { throw LiveSpeechError.modelUnavailable }
-        guard !samples.isEmpty else { return "" }
+        guard let context = whisperContext, let liveModelPath, loadedModelPath == liveModelPath else {
+            throw LiveSpeechError.modelUnavailable
+        }
+        guard !samples.isEmpty else { return .empty }
         try Task.checkCancellation()
-        // Explicit language per segment, without touching normal tab settings.
-        let language = sourceLanguage.split(separator: "-").first.map(String.init)?.lowercased()
-        let raw = await context.fullTranscribe(
-            samples: samples, language: language, skipPrompt: true, printRealtime: false
-        )
+        activeInferences += 1
+        defer { activeInferences -= 1 }
+        let detected = await context.transcribeBidirectionally(samples: samples, languages: languages)
         try Task.checkCancellation()
         guard continuousMicrophoneOwner == owner else { throw CancellationError() }
+        guard case let .recognized(raw, sourceLanguage) = detected else { return detected }
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard text.count >= Self.minTranscriptionLength,
               !text.hasPrefix("[BLANK_AUDIO]"),
               text.range(of: #"^\[.*\]$"#, options: .regularExpression) == nil,
               !Self.hallucinationPatterns.contains(where: { text.contains($0) })
-        else { return "" }
-        return text
+        else { return .empty }
+        return .recognized(text, sourceLanguage: sourceLanguage)
     }
 
     // MARK: - Recording
@@ -404,7 +421,9 @@ class SpeechRecognizer: ObservableObject {
             // 🩹 短录音（< 2s）跳过 initial_prompt：内容太少时 Whisper 会"续写"prompt 文本
             // 导致 "你好" 变成 "你好，请问今天天气怎么样？..."
             let skipPrompt = duration < 2.0
+            activeInferences += 1
             let text = await context.fullTranscribe(samples: samples, language: lang, skipPrompt: skipPrompt)
+            activeInferences -= 1
 
             await MainActor.run {
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -453,6 +472,67 @@ fileprivate func decodeWaveFile(_ url: URL) throws -> [Float] {
     return floats
 }
 
+// MARK: - Live interpretation language routing
+
+nonisolated enum ContinuousSpeechResult: Sendable {
+    case recognized(String, sourceLanguage: String)
+    case unroutable
+    case empty
+}
+
+nonisolated struct ContinuousLanguagePair: Sendable {
+    private struct Choice: Sendable {
+        let selection: String
+        let whisperCode: String
+        let id: Int32
+
+        init?(_ selection: String) {
+            let base = selection.replacingOccurrences(of: "_", with: "-").split(separator: "-").first
+            guard let base else { return nil }
+            let aliases = ["iw": "he", "in": "id", "nb": "no", "nn": "no"]
+            let lower = base.lowercased()
+            let code = aliases[lower] ?? lower
+            let id = code.withCString(whisper_lang_id)
+            guard id >= 0 else { return nil }
+            self.selection = selection
+            whisperCode = code
+            self.id = id
+        }
+    }
+
+    private let first: Choice
+    private let second: Choice
+
+    init(_ languages: (String, String)) throws {
+        guard let first = Choice(languages.0), let second = Choice(languages.1), first.id != second.id else {
+            throw LiveSpeechError.invalidLanguagePair
+        }
+        self.first = first
+        self.second = second
+    }
+
+    /// A selected language has to win globally, not merely win against the other
+    /// selected language: a confident third language must not be translated.
+    func acceptedLanguage(topID: Int32, probabilities: [Float], sampleCount: Int)
+        -> (source: String, whisperCode: String)? {
+        let top = Int(topID)
+        guard probabilities.indices.contains(top) else { return nil }
+        let choice = topID == first.id ? first : (topID == second.id ? second : nil)
+        guard let choice else { return nil }
+        let probability = probabilities[top]
+        guard probability.isFinite, probability >= 0 else { return nil }
+        let runnerUp = probabilities.enumerated()
+            .filter { $0.offset != top && $0.element.isFinite }
+            .map(\.element).max() ?? 0
+        // Very short phrases have much less evidence. Prefer asking for a
+        // clearer phrase to silently sending text in the wrong direction.
+        let shortPhrase = sampleCount < 16_000
+        guard probability >= (shortPhrase ? 0.68 : 0.53),
+              probability - runnerUp >= (shortPhrase ? 0.25 : 0.17) else { return nil }
+        return (choice.selection, choice.whisperCode)
+    }
+}
+
 // MARK: - WhisperContext (内嵌 Actor)
 
 /// whisper.cpp C 桥接层（actor 保证线程安全）
@@ -465,6 +545,49 @@ actor WhisperContext {
 
     deinit {
         whisper_free(context)
+    }
+
+    /// Detect from microphone audio, not the script of the decoded text.
+    /// Use the scores of all Whisper languages to reject uncertain directions.
+    /// Reuse the mel spectrogram for one recognition pass once routing is known.
+    func transcribeBidirectionally(samples: [Float], languages: ContinuousLanguagePair) -> ContinuousSpeechResult {
+        guard !Task.isCancelled else { return .empty }
+        guard whisper_is_multilingual(context) != 0 else { return .unroutable }
+        let threads = Int32(max(1, min(8, cpuCount() - 2)))
+        let melStatus = samples.withUnsafeBufferPointer {
+            whisper_pcm_to_mel(context, $0.baseAddress, Int32($0.count), threads)
+        }
+        guard melStatus == 0 else { return .unroutable }
+
+        var probabilities = [Float](repeating: 0, count: Int(whisper_lang_max_id()) + 1)
+        let detectedID = probabilities.withUnsafeMutableBufferPointer {
+            whisper_lang_auto_detect(context, 0, threads, $0.baseAddress)
+        }
+        guard let language = languages.acceptedLanguage(
+            topID: detectedID, probabilities: probabilities, sampleCount: samples.count
+        ) else { return .unroutable }
+        guard !Task.isCancelled else { return .empty }
+
+        var params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY)
+        params.n_threads = threads
+        params.print_realtime = false
+        params.print_progress = false
+        params.print_timestamps = false
+        params.print_special = false
+        params.translate = false
+        params.detect_language = false
+        params.no_context = true
+        params.token_timestamps = false
+        params.vad = false
+        params.offset_ms = 0
+        let status = language.whisperCode.withCString {
+            params.language = $0
+            // v1.8.7 skips its PCM-to-mel step when n_samples == 0. It
+            // then decodes the existing mel data instead of recomputing it.
+            return whisper_full(context, params, nil, 0)
+        }
+        guard status == 0 else { return .empty }
+        return .recognized(getTranscription(), sourceLanguage: language.source)
     }
 
     /// Keep the native decode and result read in one actor call, so two callers

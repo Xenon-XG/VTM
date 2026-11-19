@@ -32,8 +32,14 @@ struct WhisperModelDownloadButton: View {
     }
     
     var body: some View {
-        HStack {
+        HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 4) {
+                Text(verbatim: model.displayName)
+                    .font(.subheadline.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(verbatim: model.downloadSizeLabel)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if case .downloading = downloadStatus {
                     ProgressView(value: downloadProgress)
                         .progressViewStyle(LinearProgressViewStyle())
@@ -50,7 +56,7 @@ struct WhisperModelDownloadButton: View {
                 }
             }
             
-            Spacer()
+            Spacer(minLength: 0)
             
             Button(action: handleTap) {
                 Group {
@@ -134,18 +140,27 @@ struct WhisperModelDownloadButton: View {
             }
             
             do {
-                // 确保 Documents 目录存在
-                let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                if !FileManager.default.fileExists(atPath: documentsDir.path) {
-                    try FileManager.default.createDirectory(at: documentsDir, withIntermediateDirectories: true)
+                guard try verifyWhisperDownload(
+                    tempURL, expectedBytes: self.model.expectedBytes, sha256: self.model.sha256
+                ) else {
+                    DispatchQueue.main.async {
+                        self.downloadStatus = .error(AppStrings.shared.get("模型文件校验失败，请重试。"))
+                    }
+                    return
                 }
-                
-                // 如果目标文件已存在则先删除
-                if FileManager.default.fileExists(atPath: self.model.fileURL.path) {
-                    try FileManager.default.removeItem(at: self.model.fileURL)
+
+                let fileManager = FileManager.default
+                let destination = self.model.fileURL
+                let documentsDir = destination.deletingLastPathComponent()
+                try fileManager.createDirectory(at: documentsDir, withIntermediateDirectories: true)
+                let staged = documentsDir.appendingPathComponent(".whisper-\(UUID().uuidString).download")
+                try fileManager.moveItem(at: tempURL, to: staged)
+                defer { try? fileManager.removeItem(at: staged) }
+                if fileManager.fileExists(atPath: destination.path) {
+                    _ = try fileManager.replaceItemAt(destination, withItemAt: staged)
+                } else {
+                    try fileManager.moveItem(at: staged, to: destination)
                 }
-                
-                try FileManager.default.copyItem(at: tempURL, to: self.model.fileURL)
                 
                 DispatchQueue.main.async {
                     self.downloadStatus = .downloaded
