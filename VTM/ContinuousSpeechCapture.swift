@@ -305,7 +305,7 @@ nonisolated private final class LiveAudioTap {
         self.onDrop = onDrop
         self.onConversionFailure = onConversionFailure
         if detectionMode == .enhanced, let detector = LiveWebRTCVAD() {
-            segmenter = LiveSpeechSegmenter(isVoice: { detector.isVoice($0) })
+            segmenter = LiveSpeechSegmenter(mode: .enhanced, isVoice: { detector.isVoice($0) })
         } else {
             if detectionMode == .enhanced {
                 NSLog("VTM: WebRTC VAD initialization failed; using classic speech detection.")

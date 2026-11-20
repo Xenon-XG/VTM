@@ -12,3 +12,9 @@ Use a physical iPhone and the same locale and audio route as your normal VTM set
 8. On a physical device running iOS 26 or later, check that **Speech Recognition** and **Translation** selectors are distinct in the smaller live header. Change one and verify the other selection and the language pair remain unchanged. Check the compact layout with long language/model names and large Dynamic Type.
 9. Select **Apple System Translation** without installing its language packs. Verify the app reports the selected pair as missing or unsupported, without starting the microphone, substituting ML Kit, or initiating a download. Use only the explicit language preparation action to approve the OS download. Recheck status after returning and after relaunch.
 10. With Apple's packs installed, test Chinese ↔ Japanese in both directions and ordinary translation in airplane mode. Repeat in the same LiveContainer guest data container with JIT disabled. The Apple model path cannot be functionally verified in the iOS Simulator. Test an older iOS device if available: ML Kit remains usable, and Apple is unavailable without a crash or a changed deployment target.
+
+## Endpoint timing
+
+When benchmarking a live endpoint change, distinguish the time to submit a recorded phrase to Whisper from the time to display the original and translated captions. Use the same input and Whisper model across builds. Include a short reply, quiet speech, a brief pause within a sentence, a longer pause between speakers, and a long phrase that hits the duration cap. In recordings with only background noise, count candidate segments and actual captions separately.
+
+Enhanced detection submits short speech spans after 500 ms of detector-classified silence. Longer spans and Classic still use 600 ms. The native detector may continue to classify a brief tail as voice, so 500 ms is not the total delay from the end of speech to a caption.

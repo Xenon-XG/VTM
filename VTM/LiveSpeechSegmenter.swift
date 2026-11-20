@@ -9,10 +9,13 @@ nonisolated struct LiveSpeechSegmenter {
     private static let preRollFrames = 6             // 120ms
     private static let minVoicedFrames = 12           // 240ms
     private static let minPhraseFrames = 24            // 480ms
-    private static let finishSilenceFrames = 30        // 600ms
+    private static let classicFinishSilenceFrames = 30 // 600 ms
+    private static let shortEnhancedSilenceFrames = 25 // 500 ms
+    private static let shortEnhancedSpanFrames = 60    // 1.2 s including pre-roll
     private static let maximumFrames = 215            // 4.3s
     private static let voiceThreshold: Float = 0.013
 
+    private let mode: LiveSpeechDetectionMode
     private let isVoice: ([Float]) -> Bool
     private var window: [Float] = []
     private var preRoll: [[Float]] = []
@@ -20,7 +23,11 @@ nonisolated struct LiveSpeechSegmenter {
     private var voicedCount = 0
     private var silentCount = 0
 
-    init(isVoice: @escaping ([Float]) -> Bool = LiveSpeechSegmenter.classicIsVoice) {
+    init(
+        mode: LiveSpeechDetectionMode = .classic,
+        isVoice: @escaping ([Float]) -> Bool = LiveSpeechSegmenter.classicIsVoice
+    ) {
+        self.mode = mode
         self.isVoice = isVoice
         window.reserveCapacity(Self.frameSize)
     }
@@ -79,7 +86,13 @@ nonisolated struct LiveSpeechSegmenter {
         }
 
         let count = phrase.count / Self.frameSize
-        guard silentCount >= Self.finishSilenceFrames || count >= Self.maximumFrames else { return nil }
+        // The span through the last voiced frame stays fixed while silence
+        // accumulates. Short utterances can finish sooner, while longer
+        // phrases keep the full pause tolerance.
+        let spanThroughLastVoice = count - silentCount
+        let finishSilenceFrames = mode == .enhanced && spanThroughLastVoice <= Self.shortEnhancedSpanFrames
+            ? Self.shortEnhancedSilenceFrames : Self.classicFinishSilenceFrames
+        guard silentCount >= finishSilenceFrames || count >= Self.maximumFrames else { return nil }
         defer {
             phrase = []
             voicedCount = 0
