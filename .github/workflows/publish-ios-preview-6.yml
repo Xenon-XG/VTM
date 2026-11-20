@@ -1,0 +1,60 @@
+name: Publish verified VTM iOS preview
+
+on:
+  push:
+    branches: [release/ios-preview-6]
+    paths: [.github/workflows/publish-ios-preview-6.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-vtm-ios-preview-6
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: Xenon-XG/VTM
+      RUN_ID: '44640937613'
+      ARTIFACT_ID: '14587300344'
+      ARTIFACT_NAME: VTM-iOS-arm64-unsigned
+      ARTIFACT_DIGEST: sha256:70684da70402c2e1af594940334353e6c757a31bcc63db755821c311645076c7
+      BUILD_SHA: 847651b23576e13ff5746ae61282629470764a45
+      TAG: v1.0-ios-preview.6
+      IPA: VTM-iOS-arm64-unsigned.ipa
+    steps:
+      - name: Verify proven build and package
+        shell: bash
+        run: |
+          metadata="$(gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID")"
+          jq -e --arg name "$ARTIFACT_NAME" --arg digest "$ARTIFACT_DIGEST" --arg sha "$BUILD_SHA" --argjson run "$RUN_ID" '
+            .name == $name and .digest == $digest and .expired == false and
+            .workflow_run.head_sha == $sha and .workflow_run.id == $run
+          ' <<< "$metadata"
+          gh api "repos/$GH_REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/artifact.zip"
+          printf '%s  %s\n' "${ARTIFACT_DIGEST#sha256:}" "$RUNNER_TEMP/artifact.zip" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/package"
+          unzip -q "$RUNNER_TEMP/artifact.zip" "$IPA" SHA256SUMS.txt -d "$RUNNER_TEMP/package"
+          cd "$RUNNER_TEMP/package"
+          test "$(wc -l < SHA256SUMS.txt)" -eq 1
+          grep -E '^[a-f0-9]{64}  VTM-iOS-arm64-unsigned\.ipa$' SHA256SUMS.txt
+          sha256sum --check --strict SHA256SUMS.txt
+          unzip -tq "$IPA"
+          unzip -l "$IPA" Payload/VTM.app/Info.plist
+
+      - name: Publish prerelease with checked assets
+        shell: bash
+        run: |
+          matches="$(gh api "repos/$GH_REPO/git/matching-refs/tags/$TAG" --jq length)"
+          test "$matches" -eq 0
+          cd "$RUNNER_TEMP/package"
+          gh release create "$TAG" "$IPA" SHA256SUMS.txt --repo "$GH_REPO" \
+            --target "$BUILD_SHA" --title 'VTM 1.0 — iOS Preview 6' \
+            --notes 'Live Interpreting adds Enhanced WebRTC speech detection and keeps Classic volume detection for comparison. Neither changes the audio or enables noise suppression. The IPA includes a SHA-256 checksum.' \
+            --prerelease --latest=false
+          gh release view "$TAG" --repo "$GH_REPO" --json isDraft,isPrerelease,assets,url
